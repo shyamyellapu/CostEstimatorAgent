@@ -26,7 +26,7 @@ class Settings(BaseSettings):
     groq_api_key: str = ""
     groq_model_large: str = "llama-3.3-70b-versatile"
     groq_model_fast: str = "llama-3.1-8b-instant"
-    groq_vision_model: str = "llama-3.3-70b-versatile"
+    groq_vision_model: str = "llama-3.2-11b-vision-preview"
     anthropic_api_key: str = ""
     claude_model: str = "claude-3-5-sonnet-20241022"
 

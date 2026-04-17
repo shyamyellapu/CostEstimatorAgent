@@ -26,6 +26,8 @@ from app.config import settings
 
 logger = logging.getLogger(__name__)
 
+DOCUMENT_TEXT_CHAR_LIMIT = 50000
+
 
 class GroqProvider(AIProvider):
 
@@ -53,14 +55,10 @@ class GroqProvider(AIProvider):
         # file_bytes here is UTF-8 text bytes
         text = file_bytes.decode("utf-8", errors="replace")
         context_note = f"\nAdditional context: {additional_context}" if additional_context else ""
+        truncated_text = text[:DOCUMENT_TEXT_CHAR_LIMIT]
         prompt = DOCUMENT_EXTRACTION_PROMPT.format(
             filename=filename,
-            text=text[:12000],  # token limit guard
-            context=context_note
-        )
-        prompt = DOCUMENT_EXTRACTION_PROMPT.format(
-            filename=filename,
-            text=text[:12000],  # token limit guard
+            text=truncated_text,
             context=context_note
         )
         response = await self.client.chat.completions.create(
@@ -71,23 +69,41 @@ class GroqProvider(AIProvider):
                 {"role": "user", "content": prompt}
             ],
             temperature=0.1,
-            max_tokens=4096,
+            max_tokens=6000,
         )
         response.raw_text = text
         return response
 
     async def extract_from_image(
         self,
-        image_bytes: bytes,
+        image_bytes: bytes | List[bytes],
         filename: str,
         additional_context: Optional[str] = None
     ) -> ExtractedDataResponse:
         """Extract engineering data from drawing/screenshot image using vision."""
-        b64_image = base64.standard_b64encode(image_bytes).decode("utf-8")
+        image_list = image_bytes if isinstance(image_bytes, list) else [image_bytes]
         ext = filename.rsplit(".", 1)[-1].lower()
         mime_map = {"jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png"}
         mime = mime_map.get(ext, "image/png")
         context_note = f"\nAdditional context: {additional_context}" if additional_context else ""
+
+        user_content = [
+            {
+                "type": "text",
+                "text": IMAGE_EXTRACTION_PROMPT.format(
+                    filename=filename,
+                    context=context_note
+                )
+            }
+        ]
+        for img_bytes in image_list:
+            b64_image = base64.standard_b64encode(img_bytes).decode("utf-8")
+            user_content.append(
+                {
+                    "type": "image_url",
+                    "image_url": {"url": f"data:{mime};base64,{b64_image}"}
+                }
+            )
 
         # Vision call via raw client (instructor vision not always stable)
         raw_response = await self.raw_client.chat.completions.create(
@@ -96,19 +112,7 @@ class GroqProvider(AIProvider):
                 {"role": "system", "content": SYSTEM_PROMPT_ENGINEER},
                 {
                     "role": "user",
-                    "content": [
-                        {
-                            "type": "text",
-                            "text": IMAGE_EXTRACTION_PROMPT.format(
-                                filename=filename,
-                                context=context_note
-                            )
-                        },
-                        {
-                            "type": "image_url",
-                            "image_url": {"url": f"data:{mime};base64,{b64_image}"}
-                        }
-                    ]
+                    "content": user_content
                 }
             ],
             temperature=0.1,
@@ -119,16 +123,6 @@ class GroqProvider(AIProvider):
         data = json.loads(raw_response.choices[0].message.content)
 
         # Robust repair for flag format (some models return strings instead of objects)
-        def repair_flags(flags_list):
-            if not isinstance(flags_list, list): return []
-            repaired = []
-            for f in flags_list:
-                if isinstance(f, str):
-                    repaired.append({"field": "general", "reason": f, "confidence": 0.5})
-                elif isinstance(f, dict):
-                    repaired.append(f)
-            return repaired
-
         # Flatten nested structures into 'dimensions' for backward compatibility with costing engine
         dimensions = []
         if "structural_elements" in data and isinstance(data["structural_elements"], list):

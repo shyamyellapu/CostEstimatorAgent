@@ -9,6 +9,19 @@ router = APIRouter()
 logger = logging.getLogger(__name__)
 
 
+def _derive_member_types(result) -> list[str]:
+    if getattr(result, "member_types", None):
+        return result.member_types
+
+    return sorted(
+        {
+            dimension.section_type
+            for dimension in getattr(result, "dimensions", [])
+            if getattr(dimension, "section_type", None)
+        }
+    )
+
+
 @router.post("/parse")
 async def parse_boq(
     file: UploadFile = File(...),
@@ -24,12 +37,13 @@ async def parse_boq(
     ai = get_ai_provider()
     try:
         result = await ai.parse_boq(text, additional_context)
+        member_types = _derive_member_types(result)
         return {
             "dimensions": [d.model_dump() for d in result.dimensions],
             "summary": result.summary,
             "overall_confidence": result.overall_confidence,
             "flags": [f.model_dump() for f in result.flags],
-            "member_types": result.member_types,
+            "member_types": member_types,
         }
     except Exception as e:
         logger.error(f"BOQ parse error: {e}")

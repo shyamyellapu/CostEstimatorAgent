@@ -127,6 +127,10 @@ class ExtractedDataResponse(BaseModel):
     overall_confidence: float = 1.0
     raw_text: Optional[str] = None
     flags: List[ExtractionFlag] = []
+    member_types: List[str] = []
+    material_references: List[str] = []
+    annotations: List[str] = []
+    fabrication_notes: List[str] = []
 
 
 class MemberClassification(BaseModel):
@@ -184,7 +188,7 @@ class AIProvider(ABC):
     @abstractmethod
     async def extract_from_image(
         self,
-        image_bytes: bytes,
+        image_bytes: bytes | List[bytes],
         filename: str,
         additional_context: Optional[str] = None
     ) -> ExtractedDataResponse:

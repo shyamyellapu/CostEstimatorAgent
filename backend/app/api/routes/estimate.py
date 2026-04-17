@@ -32,7 +32,7 @@ FileType = type('FileType', (), {
     'DOCX': 'docx', 'QUOTATION': 'quotation', 'OTHER': 'other'
 })
 from app.services.file_storage import storage_service
-from app.services.document_parser import get_file_text, is_image_file, pdf_page_to_image
+from app.services.document_parser import get_file_text, is_image_file, pdf_to_images
 from app.services.costing_engine import run_costing_engine, DEFAULT_RATES
 from app.services.excel_generator import excel_generator
 from app.ai import get_ai_provider
@@ -41,6 +41,16 @@ import io
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
+
+
+def _extraction_score(extraction) -> int:
+    return (
+        len(getattr(extraction, "structural_elements", []) or []) * 5
+        + len(getattr(extraction, "dimensions", []) or []) * 3
+        + len(getattr(extraction, "bolts_and_plates", []) or []) * 2
+        + len(getattr(extraction, "member_types", []) or [])
+        + (3 if getattr(extraction, "drawing_metadata", None) and getattr(extraction.drawing_metadata, "drawing_number", None) else 0)
+    )
 
 
 def _detect_file_type(filename: str, content_type: str) -> FileType:
@@ -155,15 +165,29 @@ async def extract_from_files(
             is_drawing = is_image_file(uf.original_filename) or uf.original_filename.lower().endswith(".pdf")
             
             if is_drawing:
-                # Use Vision for drawings
                 if uf.original_filename.lower().endswith(".pdf"):
-                    vision_bytes = pdf_page_to_image(file_bytes)
-                    if vision_bytes:
-                        extraction = await ai.extract_from_image(vision_bytes, uf.original_filename, additional_context)
+                    text = get_file_text(file_bytes, uf.original_filename, uf.mime_type)
+                    text_extraction = None
+                    vision_extraction = None
+
+                    # Only use text if there's meaningful extractable text (> 200 chars)
+                    if len(text.strip()) > 200:
+                        text_extraction = await ai.extract_from_document(
+                            text.encode("utf-8"), uf.file_type, uf.original_filename, additional_context
+                        )
+
+                    vision_bytes = pdf_to_images(file_bytes)
+                    if vision_bytes and (text_extraction is None or _extraction_score(text_extraction) == 0):
+                        vision_extraction = await ai.extract_from_image(vision_bytes, uf.original_filename, additional_context)
+
+                    if text_extraction and vision_extraction:
+                        extraction = text_extraction if _extraction_score(text_extraction) >= _extraction_score(vision_extraction) else vision_extraction
+                    elif text_extraction:
+                        extraction = text_extraction
+                    elif vision_extraction:
+                        extraction = vision_extraction
                     else:
-                        # Fallback to text
-                        text = get_file_text(file_bytes, uf.original_filename, uf.mime_type)
-                        extraction = await ai.extract_from_document(text.encode("utf-8"), uf.file_type, uf.original_filename, additional_context)
+                        raise ValueError("Could not extract readable text or images from the PDF")
                 else:
                     extraction = await ai.extract_from_image(file_bytes, uf.original_filename, additional_context)
             else:

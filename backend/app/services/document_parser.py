@@ -11,7 +11,7 @@ logger = logging.getLogger(__name__)
 
 
 def extract_text_from_pdf(file_bytes: bytes) -> str:
-    """Extract all text from a PDF file using PyMuPDF."""
+    """Extract all text from a PDF file using PyMuPDF with a pypdf fallback."""
     try:
         import fitz
         doc = fitz.open(stream=file_bytes, filetype="pdf")
@@ -21,7 +21,19 @@ def extract_text_from_pdf(file_bytes: bytes) -> str:
         doc.close()
         return "\n".join(texts)
     except Exception as e:
-        logger.error(f"PDF text extraction error: {e}")
+        logger.warning(f"PyMuPDF PDF text extraction failed: {e}")
+
+    try:
+        from pypdf import PdfReader
+        reader = PdfReader(io.BytesIO(file_bytes))
+        texts = []
+        for page in reader.pages:
+            page_text = page.extract_text() or ""
+            if page_text.strip():
+                texts.append(page_text)
+        return "\n".join(texts)
+    except Exception as fallback_error:
+        logger.error(f"PDF text extraction error: {fallback_error}")
         return ""
 
 
@@ -33,13 +45,31 @@ def pdf_page_to_image(file_bytes: bytes, page_num: int = 0) -> bytes:
         if page_num >= len(doc):
             return b""
         page = doc[page_num]
-        pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))  # 2x scale for better AI readability
+        pix = page.get_pixmap(matrix=fitz.Matrix(1.5, 1.5))  # 1.5x scale balances quality and size
         img_bytes = pix.tobytes("png")
         doc.close()
         return img_bytes
     except Exception as e:
         logger.error(f"PDF to Image conversion error: {e}")
         return b""
+
+
+def pdf_to_images(file_bytes: bytes, max_pages: int = 3, scale: float = 1.5) -> list[bytes]:
+    """Convert up to max_pages of a PDF into PNG bytes for multi-page vision extraction."""
+    try:
+        import fitz
+        doc = fitz.open(stream=file_bytes, filetype="pdf")
+        page_count = min(len(doc), max_pages)
+        images = []
+        for page_num in range(page_count):
+            page = doc[page_num]
+            pix = page.get_pixmap(matrix=fitz.Matrix(scale, scale))
+            images.append(pix.tobytes("png"))
+        doc.close()
+        return images
+    except Exception as e:
+        logger.error(f"PDF to Images conversion error: {e}")
+        return []
 
 
 def extract_text_from_docx(file_bytes: bytes) -> str:

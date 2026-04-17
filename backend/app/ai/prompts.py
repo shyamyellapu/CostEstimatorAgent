@@ -22,7 +22,7 @@ STRICT RULES:
 6. Use mm for dimensions, m for lengths where applicable, kg for weights.
 """
 
-DOCUMENT_EXTRACTION_PROMPT = """Extract all engineering data from the following document.
+DOCUMENT_EXTRACTION_PROMPT = """Extract all engineering and fabrication data from the following document.
 
 Filename: {filename}
 {context}
@@ -32,8 +32,82 @@ Document content:
 {text}
 ---
 
+The document may be a fabrication drawing text export, BOQ, material take-off, RFQ attachment, marked-up drawing notes, or engineering specification.
+
 Extract and return a JSON object with this structure:
 {{
+  "drawing_metadata": {{
+    "project_name": "string or empty",
+    "unit_area": "string or empty",
+    "drawing_number": "string or empty",
+    "revision": "string or empty",
+    "client": "string or empty",
+    "consultant": "string or empty",
+    "contractor": "string or empty",
+    "work_order_number": "string or empty",
+    "scale": "string or empty",
+    "date_issued": "string or empty",
+    "referenced_drawings": ["strings"],
+    "general_notes": ["strings"]
+  }},
+  "structural_elements": [
+    {{
+      "support_tag": "string or empty",
+      "item_description": "string or empty",
+      "section_type": "string or empty",
+      "section_designation": "string or empty",
+      "material_grade": "string or empty",
+      "length_mm": number or 0,
+      "width_mm": number or null,
+      "thickness_mm": number or null,
+      "quantity": number,
+      "unit_weight_kg_per_m": number or 0,
+      "total_weight_kg": number or 0,
+      "weld_type": "string or empty",
+      "weld_size_mm": number or null,
+      "weld_length_mm": number or null,
+      "surface_area_m2": number or 0,
+      "notes": "string or empty"
+    }}
+  ],
+  "bolts_and_plates": [
+    {{
+      "item_description": "string or empty",
+      "size_designation": "string or empty",
+      "grade": "string or empty",
+      "length_mm": number or null,
+      "quantity": number,
+      "notes": "string or empty"
+    }}
+  ],
+  "surface_treatment": {{
+    "blasting_standard": "string or empty",
+    "paint_system": "string or empty",
+    "galvanizing_required": false,
+    "galvanized_members": ["strings"],
+    "total_surface_area_m2": number or 0
+  }},
+  "weight_summary": {{
+    "total_structural_steel_kg": number or 0,
+    "total_plates_kg": number or 0,
+    "grand_total_steel_kg": number or 0
+  }},
+  "cost_estimation_inputs": {{
+    "structural_steel_rate_usd_per_kg": number or 0,
+    "fabrication_welding_manhours": number or 0,
+    "fabrication_fitting_manhours": number or 0,
+    "blasting_area_sqm": number or 0,
+    "painting_area_sqm": number or 0,
+    "bolt_sets_count": integer or 0,
+    "paint_litres_estimated": number or 0
+  }},
+  "ambiguities": [
+    {{
+      "location": "string",
+      "issue": "string",
+      "assumption_made": "string"
+    }}
+  ],
   "dimensions": [
     {{
       "item_tag": "string or null",
@@ -65,11 +139,15 @@ Extract and return a JSON object with this structure:
 
 Important: Convert all dimensions to mm. If unit is inches, multiply by 25.4.
 Flag any missing mandatory fields (length, section_type, quantity).
+Populate both the richer structured sections and the flattened dimensions list whenever the source contains enough information.
 """
 
 IMAGE_EXTRACTION_PROMPT = """You are a senior structural/mechanical estimator at a UAE-based industrial fabrication company (C&J Gulf Equipment Manufacturing L.L.C.). You are highly experienced in reading ADNOC, Aramco, and EPC engineering drawings for structural steel, pipe supports, skid packages, and module work.
 
 You will be given one or more engineering drawing images or PDF pages. Your task is to extract ALL quantifiable fabrication data visible in the drawings and return a structured JSON object that can be used to populate a Job Costing Sheet.
+
+Filename: {filename}
+{context}
 
 ---
 
@@ -94,26 +172,34 @@ For EVERY pipe support, beam, column, brace, plate, fitting, or structural membe
 Extract one entry per unique element type per support tag (e.g., CS-2620-001, CS-2620-002...). Where multiple supports share identical details, note quantity accordingly.
 
 Return the following fields per element:
-- support_tag (e.g., CS-2620-001)
-- item_description (e.g., "UC 152x152x30 vertical column")
-- section_type (one of: UC / UB / PFC / UBP / L_angle / flat_bar / cap_plate / base_plate / strengthening_plate / round_bar / pipe / bolt / nut / washer / other)
-- section_designation (e.g. "UC 152x152x30")
-- material_grade (default to S275/A36 if not shown)
-- length_mm, width_mm, thickness_mm
-- quantity (Number of identical elements for this support tag)
-- unit_weight_kg_per_m (Standard unit weight for the section)
-- total_weight_kg ((length_mm / 1000) × unit_weight_kg_per_m × quantity)
-- weld_type, weld_size_mm, weld_length_mm
-- surface_area_m2 (Estimated paintable surface area)
-- notes (annotations, TYP markers, revision clouds)
+
+| Field | Description |
+|---|---|
+| `support_tag` | Tag label of the pipe support or structural item (e.g., CS-2620-001) |
+| `item_description` | Plain-language description (e.g., "UC 152x152x30 vertical column") |
+| `section_type` | One of: `UC` / `UB` / `PFC` / `UBP` / `L_angle` / `flat_bar` / `cap_plate` / `base_plate` / `strengthening_plate` / `round_bar` / `pipe` / `bolt` / `nut` / `washer` / `other` |
+| `section_designation` | Full section label as shown (e.g., "UC 152x152x30", "PFC 150x90x24", "L 100x100x10") |
+| `material_grade` | Steel grade if specified (default to S275/A36 if not shown; note if galvanized) |
+| `length_mm` | Member length in mm (read from dimension lines or elevation differences) |
+| `width_mm` | Width in mm (for plates and flanges; null for I-sections) |
+| `thickness_mm` | Thickness in mm (for plates; null for standard sections) |
+| `quantity` | Number of identical elements for this support tag |
+| `unit_weight_kg_per_m` | Standard unit weight for the section (fill from steel tables; e.g., UC 152x152x30 = 30 kg/m) |
+| `total_weight_kg` | Calculated: (length_mm / 1000) × unit_weight_kg_per_m × quantity |
+| `weld_type` | E.g., "fillet weld", "full penetration butt weld", "cap plate weld" — read from detail notes |
+| `weld_size_mm` | Leg size in mm if specified (e.g., 6, 8, 10) |
+| `weld_length_mm` | Total weld run in mm per joint (estimate from geometry if not dimensioned) |
+| `surface_area_m2` | Estimated paintable surface area in m² (for blasting/painting takeoff) |
+| `notes` | Any visible annotations, TYP markers, existing vs new member flags, revision clouds |
 
 ---
 
 ### STEP 3 — EXTRACT BOLT, PLATE & CONSUMABLE DATA
 
 List separately:
-- All bolts, nuts, washers: size, grade, length, quantity
+- All bolts, nuts, washers: size (M16, M20, etc.), grade (8.8, A325, etc.), length, quantity
 - All cap plates, base plates, stiffeners: dimensions L×W×T in mm, quantity
+- Any special items: pre-drilled holes, slotted holes, shim plates, anchor bolts
 
 ---
 
@@ -122,7 +208,8 @@ List separately:
 From drawing notes and specifications, identify:
 - Blasting standard (e.g., Sa 2.5)
 - Paint system (primer + finish coat, DFT in microns)
-- Galvanizing requirement (yes/no)
+- Galvanizing requirement (yes/no, which members)
+- Total estimated surface area for treatment (m²)
 
 ---
 
@@ -132,6 +219,10 @@ List every item where:
 - A dimension line is missing or illegible
 - "REF" dimensions are used without a clear reference
 - Section size is partially obscured
+- "TYP" (typical) applies but the count of instances is unclear
+- Existing vs. new steel is ambiguous
+
+Format these as a separate `"ambiguities"` array.
 
 ---
 
@@ -226,10 +317,16 @@ Return a single valid JSON object with this exact structure:
 
 ### RULES
 
-1. **All dimensions in mm.**
-2. **Never invent data.** If a dimension is not visible, set the value to null.
-3. **Use standard steel section tables** to fill unit_weight_kg_per_m.
-4. Return **only the JSON** — no preamble, no markdown explanation.
+1. **All dimensions in mm.** Convert inches (1 inch = 25.4 mm) or meters (1 m = 1000 mm) explicitly.
+2. **Never invent data.** If a dimension is not visible, set the value to `null` and log it in `ambiguities`.
+3. **Use standard steel section tables** to fill `unit_weight_kg_per_m` where the designation is clear (e.g., UC 152x152x30 → 30.0 kg/m; PFC 150x90x24 → 24.0 kg/m).
+4. **"TYP" members** — multiply by the number of identical instances visible across all plan/section views on the sheet. If count is unclear, log in ambiguities.
+5. **"EXISTING" members** — flag them with `"notes": "existing — no fabrication cost"` and exclude from weight totals unless modification work is noted.
+6. **Revision clouds** — note which elements are revised (Rev A vs Rev B) in the notes field.
+7. **Multi-sheet drawings** — if multiple PDF pages are provided, process all sheets and consolidate into a single JSON; do not duplicate elements that appear on multiple sheets for reference only.
+8. Read the **entire title block**: client, contractor, work order number, and project number are mandatory fields for the cost sheet header.
+9. **Do not skip small items**: cap plates, gussets, bracing angles, and bolt groups significantly affect cost.
+10. Return **only the JSON** — no preamble, no markdown explanation, no trailing text.
 """
 
 BOQ_PARSE_PROMPT = """Parse this Bill of Quantities (BOQ) into structured engineering data.

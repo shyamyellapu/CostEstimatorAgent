@@ -1,14 +1,63 @@
 import { useState, useCallback } from 'react'
 import { useDropzone } from 'react-dropzone'
 import { useNavigate } from 'react-router-dom'
-import { Upload, FileText, Image, File, X, ChevronRight, AlertTriangle, CheckCircle, Edit3, Loader } from 'lucide-react'
+import { Upload, X, ChevronRight, AlertTriangle, CheckCircle, ChevronDown, ChevronUp } from 'lucide-react'
 import { api } from '../api/client'
 import toast from 'react-hot-toast'
 
 type Step = 'upload' | 'extract' | 'confirm' | 'calculate'
 
 interface UploadedFile { file: File; id?: string }
-interface ExtractedItem {
+
+// ── Rich extraction types (same as DrawingReader) ──────────────────────────
+interface DrawingMetadata {
+  project_name?: string; unit_area?: string; drawing_number?: string; revision?: string
+  client?: string; consultant?: string; contractor?: string; work_order_number?: string
+  scale?: string; date_issued?: string; referenced_drawings?: string[]; general_notes?: string[]
+}
+interface StructuralElement {
+  support_tag?: string; item_description?: string; section_type?: string
+  section_designation?: string; material_grade?: string
+  length_mm?: number | null; width_mm?: number | null; thickness_mm?: number | null
+  quantity?: number | null; unit_weight_kg_per_m?: number | null; total_weight_kg?: number | null
+  weld_type?: string; weld_size_mm?: number | null; weld_length_mm?: number | null
+  surface_area_m2?: number | null; notes?: string
+}
+interface BoltPlateItem {
+  item_description?: string; size_designation?: string; grade?: string
+  length_mm?: number | null; quantity?: number | null; notes?: string
+}
+interface SurfaceTreatment {
+  blasting_standard?: string; paint_system?: string; galvanizing_required?: boolean
+  galvanized_members?: string[]; total_surface_area_m2?: number | null
+}
+interface WeightSummary {
+  total_structural_steel_kg?: number | null; total_plates_kg?: number | null; grand_total_steel_kg?: number | null
+}
+interface AmbiguityItem { location?: string; issue?: string; assumption_made?: string }
+interface FlagItem { field?: string; reason?: string }
+interface ExtractionResult {
+  drawing_metadata?: DrawingMetadata | null
+  structural_elements?: StructuralElement[]
+  bolts_and_plates?: BoltPlateItem[]
+  surface_treatment?: SurfaceTreatment | null
+  weight_summary?: WeightSummary | null
+  ambiguities?: AmbiguityItem[]
+  flags?: FlagItem[]
+  dimensions?: any[]
+  summary?: string
+  overall_confidence?: number
+  member_types?: string[]
+  material_references?: string[]
+  annotations?: string[]
+  fabrication_notes?: string[]
+}
+interface FileExtraction {
+  file_id: string; filename: string; confidence: number
+  data?: ExtractionResult; error?: string
+}
+// Flat item for costing engine
+interface CostingItem {
   item_tag: string; description: string; section_type: string
   quantity: number; length_mm: number | null; width_mm: number | null
   thickness_mm: number | null; od_mm: number | null; material_grade: string | null
@@ -23,11 +72,53 @@ function fileIcon(name: string) {
   if (['docx','doc'].includes(ext || '')) return { label: 'DOC', cls: 'docx' }
   return { label: 'FILE', cls: 'other' }
 }
-
 function formatBytes(b: number) {
   if (b < 1024) return `${b} B`
   if (b < 1024*1024) return `${(b/1024).toFixed(1)} KB`
   return `${(b/1024/1024).toFixed(1)} MB`
+}
+function fmtVal(v?: number | string | null) { return (v == null || v === '') ? '—' : v }
+function hasMetaData(m: DrawingMetadata) { return Object.values(m).some(v => Array.isArray(v) ? v.length > 0 : Boolean(v)) }
+
+// Convert rich StructuralElement → flat CostingItem for the costing engine
+function toCostingItems(data: ExtractionResult): CostingItem[] {
+  const items: CostingItem[] = []
+  for (const el of data.structural_elements || []) {
+    items.push({
+      item_tag: el.support_tag || '',
+      description: el.item_description || '',
+      section_type: el.section_type || '',
+      quantity: el.quantity ?? 1,
+      length_mm: el.length_mm ?? null,
+      width_mm: el.width_mm ?? null,
+      thickness_mm: el.thickness_mm ?? null,
+      od_mm: null,
+      material_grade: el.material_grade ?? null,
+      weld_joints: el.weld_length_mm ?? null,
+      confidence: 0.9,
+      flags: [],
+    })
+  }
+  // fallback to legacy dimensions
+  if (items.length === 0) {
+    for (const d of data.dimensions || []) {
+      items.push({
+        item_tag: d.item_tag || '',
+        description: d.description || '',
+        section_type: d.section_type || '',
+        quantity: d.quantity ?? 1,
+        length_mm: d.length_mm ?? null,
+        width_mm: d.width_mm ?? null,
+        thickness_mm: d.thickness_mm ?? null,
+        od_mm: d.od_mm ?? null,
+        material_grade: d.material_grade ?? null,
+        weld_joints: d.weld_joints ?? null,
+        confidence: d.confidence ?? 0.5,
+        flags: d.flags || [],
+      })
+    }
+  }
+  return items
 }
 
 export default function NewEstimate() {
@@ -40,10 +131,12 @@ export default function NewEstimate() {
   const [projectName, setProjectName] = useState('')
   const [projectRef, setProjectRef] = useState('')
   const [loading, setLoading] = useState(false)
-  const [extractions, setExtractions] = useState<any[]>([])
-  const [confirmedItems, setConfirmedItems] = useState<ExtractedItem[]>([])
+  const [extractions, setExtractions] = useState<FileExtraction[]>([])
+  const [confirmedItems, setConfirmedItems] = useState<CostingItem[]>([])
   const [costResult, setCostResult] = useState<any>(null)
   const [excelDownloading, setExcelDownloading] = useState(false)
+  const [expandedFiles, setExpandedFiles] = useState<Record<string, boolean>>({})
+  const [editMode, setEditMode] = useState(false)
 
   const { getRootProps, getInputProps, isDragActive } = useDropzone({
     onDrop: useCallback((accepted: File[]) => {
@@ -87,15 +180,20 @@ export default function NewEstimate() {
     setLoading(true)
     try {
       const res = await api.post(`/estimate/extract?job_id=${jobId}`)
-      setExtractions(res.data.extractions)
-      // Flatten all dimension items for confirmation
-      const allItems: ExtractedItem[] = []
-      for (const ext of res.data.extractions) {
-        const dims = ext.data?.dimensions || []
-        allItems.push(...dims)
+      const richExtractions: FileExtraction[] = res.data.extractions
+      setExtractions(richExtractions)
+      // Auto-expand all files
+      const expanded: Record<string, boolean> = {}
+      for (const e of richExtractions) expanded[e.file_id] = true
+      setExpandedFiles(expanded)
+      // Build flat costing items from all successful extractions
+      const allItems: CostingItem[] = []
+      for (const ext of richExtractions) {
+        if (ext.data) allItems.push(...toCostingItems(ext.data))
       }
       setConfirmedItems(allItems)
-      toast.success(`Extraction complete — ${allItems.length} items found`)
+      const totalItems = allItems.length
+      toast.success(`Extraction complete — ${totalItems} items found across ${richExtractions.length} file(s)`)
       setStep('confirm')
     } catch (e: any) { toast.error(e.message) }
     finally { setLoading(false) }
@@ -141,7 +239,7 @@ export default function NewEstimate() {
   const stepIdx = stepList.findIndex(s => s.key === step)
 
   return (
-    <div className="animate-fade-in" style={{ maxWidth: 900, margin: '0 auto' }}>
+    <div className="animate-fade-in" style={{ maxWidth: 1100, margin: '0 auto' }}>
       <div className="page-title-bar">
         <div>
           <h1 className="page-title">New Estimate</h1>
@@ -278,30 +376,296 @@ export default function NewEstimate() {
       {/* ── STEP: CONFIRM ── */}
       {step === 'confirm' && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
-          <div className="alert alert-warning">
-            <AlertTriangle size={16} />
-            <span>Review all extracted items below. Edit any incorrect values before confirming. Items with low confidence are highlighted.</span>
+
+          {/* Summary bar */}
+          <div className="card animate-fade-in">
+            <div className="card-header">
+              <div>
+                <div className="card-title">Extraction Complete</div>
+                <div className="card-subtitle">{extractions.length} file(s) processed — review and confirm before costing</div>
+              </div>
+              <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+                <span className="badge badge-neutral">{confirmedItems.length} items</span>
+                <button className="btn btn-secondary btn-sm" onClick={() => setEditMode(e => !e)}>
+                  {editMode ? 'Hide Edit' : 'Edit Items'}
+                </button>
+              </div>
+            </div>
           </div>
 
-          {confirmedItems.map((item, i) => (
-            <ExtractedItemCard
-              key={`${item.item_tag}-${i}`}
-              item={item}
-              onChange={updated => setConfirmedItems(prev => prev.map((x, idx) => idx === i ? updated : x))}
-            />
-          ))}
+          {/* Per-file rich extraction panels */}
+          {extractions.map(ext => {
+            const d = ext.data
+            const conf = Math.round((ext.confidence || 0) * 100)
+            const isExpanded = expandedFiles[ext.file_id] !== false
+            const ic = fileIcon(ext.filename)
+            return (
+              <div key={ext.file_id} className="card animate-fade-in">
+                {/* File header — click to collapse */}
+                <div
+                  className="card-header"
+                  style={{ cursor: 'pointer', userSelect: 'none' }}
+                  onClick={() => setExpandedFiles(prev => ({ ...prev, [ext.file_id]: !isExpanded }))}
+                >
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.625rem' }}>
+                    <div className={`file-icon ${ic.cls}`} style={{ width: 32, height: 32, fontSize: '0.6rem' }}>{ic.label}</div>
+                    <div>
+                      <div className="card-title" style={{ fontSize: '0.9rem' }}>{ext.filename}</div>
+                      {d?.drawing_metadata?.project_name && (
+                        <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>{d.drawing_metadata.project_name}</div>
+                      )}
+                    </div>
+                  </div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.625rem' }}>
+                    {ext.error
+                      ? <span className="badge badge-warning">Failed</span>
+                      : <span className={`badge ${conf >= 70 ? 'badge-success' : 'badge-warning'}`}>{conf}% confidence</span>}
+                    {d?.member_types?.map((t, i) => <span key={i} className="badge badge-primary" style={{ fontSize: '0.65rem' }}>{t}</span>)}
+                    {isExpanded ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
+                  </div>
+                </div>
+
+                {isExpanded && d && !ext.error && (
+                  <div style={{ padding: '0 1rem 1rem' }}>
+
+                    {/* Summary text */}
+                    {d.summary && <p style={{ fontSize: '0.875rem', margin: '0.5rem 0 1rem', color: 'var(--text-secondary)' }}>{d.summary}</p>}
+
+                    {/* Metadata + Surface/Weight row */}
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(340px, 1fr))', gap: '1rem', marginBottom: '1rem' }}>
+                      {d.drawing_metadata && hasMetaData(d.drawing_metadata) && (
+                        <div style={{ background: 'var(--bg-secondary)', borderRadius: 10, padding: '0.875rem' }}>
+                          <div style={{ fontWeight: 700, fontSize: '0.8rem', marginBottom: '0.625rem', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Drawing Metadata</div>
+                          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.5rem 1.25rem', fontSize: '0.8125rem' }}>
+                            {[
+                              ['Project', d.drawing_metadata.project_name], ['Unit / Area', d.drawing_metadata.unit_area],
+                              ['Drawing No.', d.drawing_metadata.drawing_number], ['Revision', d.drawing_metadata.revision],
+                              ['Client', d.drawing_metadata.client], ['Contractor', d.drawing_metadata.contractor],
+                              ['Work Order', d.drawing_metadata.work_order_number], ['Scale', d.drawing_metadata.scale],
+                            ].map(([label, val]) => val ? (
+                              <div key={label}>
+                                <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>{label}</div>
+                                <div style={{ fontWeight: 600 }}>{val}</div>
+                              </div>
+                            ) : null)}
+                          </div>
+                          {d.drawing_metadata.referenced_drawings && d.drawing_metadata.referenced_drawings.length > 0 && (
+                            <div style={{ marginTop: '0.625rem' }}>
+                              <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', marginBottom: 4 }}>Referenced Drawings</div>
+                              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.3rem' }}>
+                                {d.drawing_metadata.referenced_drawings.map((r, i) => <span key={i} className="badge badge-neutral" style={{ fontSize: '0.65rem' }}>{r}</span>)}
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      )}
+
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+                        {d.weight_summary && (d.weight_summary.grand_total_steel_kg || d.weight_summary.total_structural_steel_kg) && (
+                          <div style={{ background: 'var(--bg-secondary)', borderRadius: 10, padding: '0.875rem' }}>
+                            <div style={{ fontWeight: 700, fontSize: '0.8rem', marginBottom: '0.625rem', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Weight Summary</div>
+                            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '0.5rem' }}>
+                              {[
+                                ['Structural', d.weight_summary.total_structural_steel_kg],
+                                ['Plates', d.weight_summary.total_plates_kg],
+                                ['Total', d.weight_summary.grand_total_steel_kg],
+                              ].map(([label, val]) => (
+                                <div key={label as string} style={{ textAlign: 'center', background: label === 'Total' ? 'var(--accent-primary)' : 'var(--bg-card)', borderRadius: 8, padding: '0.5rem' }}>
+                                  <div style={{ fontSize: '0.65rem', color: label === 'Total' ? 'rgba(255,255,255,0.8)' : 'var(--text-muted)' }}>{label}</div>
+                                  <div style={{ fontWeight: 700, fontSize: '0.9rem', color: label === 'Total' ? '#fff' : 'var(--text-primary)' }}>{fmtVal(val as any)}</div>
+                                  <div style={{ fontSize: '0.65rem', color: label === 'Total' ? 'rgba(255,255,255,0.7)' : 'var(--text-muted)' }}>kg</div>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+                        {d.surface_treatment && (d.surface_treatment.blasting_standard || d.surface_treatment.paint_system) && (
+                          <div style={{ background: 'var(--bg-secondary)', borderRadius: 10, padding: '0.875rem' }}>
+                            <div style={{ fontWeight: 700, fontSize: '0.8rem', marginBottom: '0.5rem', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Surface Treatment</div>
+                            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.5rem', fontSize: '0.8125rem' }}>
+                              {[['Blasting', d.surface_treatment.blasting_standard], ['Paint', d.surface_treatment.paint_system]].map(([l, v]) => v ? (
+                                <div key={l}><div style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>{l}</div><div style={{ fontWeight: 600 }}>{v}</div></div>
+                              ) : null)}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Structural Elements table */}
+                    {d.structural_elements && d.structural_elements.length > 0 && (
+                      <div style={{ marginBottom: '1rem' }}>
+                        <div style={{ fontWeight: 700, fontSize: '0.8rem', marginBottom: '0.5rem', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                          Structural Elements ({d.structural_elements.length})
+                        </div>
+                        <div style={{ overflowX: 'auto' }}>
+                          <table className="data-table" style={{ fontSize: '0.8rem' }}>
+                            <thead>
+                              <tr>
+                                <th>Tag</th><th>Description</th><th>Section</th><th>Grade</th>
+                                <th className="text-center">Qty</th><th className="text-right">L (mm)</th>
+                                <th className="text-right">W (mm)</th><th className="text-right">T (mm)</th>
+                                <th className="text-right">Wt (kg)</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {d.structural_elements.map((el, i) => (
+                                <tr key={i}>
+                                  <td style={{ fontWeight: 700, fontFamily: 'monospace', whiteSpace: 'nowrap' }}>{el.support_tag || `#${i + 1}`}</td>
+                                  <td style={{ minWidth: 140 }}>{el.item_description || '—'}</td>
+                                  <td style={{ whiteSpace: 'nowrap' }}>{el.section_designation || el.section_type || '—'}</td>
+                                  <td>{el.material_grade || '—'}</td>
+                                  <td className="text-center">{fmtVal(el.quantity)}</td>
+                                  <td className="text-right">{fmtVal(el.length_mm)}</td>
+                                  <td className="text-right">{fmtVal(el.width_mm)}</td>
+                                  <td className="text-right">{fmtVal(el.thickness_mm)}</td>
+                                  <td className="text-right">{fmtVal(el.total_weight_kg)}</td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Bolts & Plates */}
+                    {d.bolts_and_plates && d.bolts_and_plates.length > 0 && (
+                      <div style={{ marginBottom: '1rem' }}>
+                        <div style={{ fontWeight: 700, fontSize: '0.8rem', marginBottom: '0.5rem', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                          Bolts & Plates ({d.bolts_and_plates.length})
+                        </div>
+                        <div style={{ overflowX: 'auto' }}>
+                          <table className="data-table" style={{ fontSize: '0.8rem' }}>
+                            <thead><tr><th>Description</th><th>Size</th><th>Grade</th><th className="text-right">L (mm)</th><th className="text-center">Qty</th></tr></thead>
+                            <tbody>
+                              {d.bolts_and_plates.map((bp, i) => (
+                                <tr key={i}>
+                                  <td>{bp.item_description || '—'}</td>
+                                  <td>{bp.size_designation || '—'}</td>
+                                  <td>{bp.grade || '—'}</td>
+                                  <td className="text-right">{fmtVal(bp.length_mm)}</td>
+                                  <td className="text-center">{fmtVal(bp.quantity)}</td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* General Notes */}
+                    {d.drawing_metadata?.general_notes && d.drawing_metadata.general_notes.length > 0 && (
+                      <div style={{ marginBottom: '0.5rem' }}>
+                        <div style={{ fontWeight: 700, fontSize: '0.8rem', marginBottom: '0.5rem', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>General Notes</div>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '0.3rem' }}>
+                          {d.drawing_metadata.general_notes.map((note, i) => (
+                            <div key={i} style={{ fontSize: '0.8rem', padding: '0.4rem 0.6rem', background: 'var(--bg-secondary)', borderRadius: 6 }}>{note}</div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Ambiguities */}
+                    {d.ambiguities && d.ambiguities.length > 0 && (
+                      <div style={{ marginTop: '0.75rem' }}>
+                        <div style={{ fontWeight: 700, fontSize: '0.8rem', marginBottom: '0.5rem', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                          Ambiguities ({d.ambiguities.length})
+                        </div>
+                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))', gap: '0.5rem' }}>
+                          {d.ambiguities.map((a, i) => (
+                            <div key={i} style={{ border: '1px solid var(--border)', borderRadius: 8, padding: '0.625rem', fontSize: '0.8rem' }}>
+                              <div style={{ fontWeight: 700 }}>{a.location || `Issue ${i + 1}`}</div>
+                              <div style={{ color: 'var(--text-secondary)', marginTop: 2 }}>{a.issue}</div>
+                              <div style={{ color: 'var(--text-muted)', marginTop: 4, fontSize: '0.75rem' }}>Assumption: {a.assumption_made || '—'}</div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Flags */}
+                    {d.flags && d.flags.length > 0 && (
+                      <div className="alert alert-warning" style={{ marginTop: '0.75rem' }}>
+                        <AlertTriangle size={14} />
+                        <div style={{ fontSize: '0.8rem' }}>
+                          <strong>Flags:</strong>
+                          <ul style={{ margin: '4px 0 0 14px' }}>
+                            {d.flags.map((f, i) => <li key={i}><strong>{f.field}:</strong> {f.reason}</li>)}
+                          </ul>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {ext.error && (
+                  <div className="card-body">
+                    <div className="alert alert-warning"><AlertTriangle size={14} /><span>Extraction failed: {ext.error}</span></div>
+                  </div>
+                )}
+              </div>
+            )
+          })}
+
+          {/* Edit mode — editable flat items for costing */}
+          {editMode && confirmedItems.length > 0 && (
+            <div className="card animate-fade-in">
+              <div className="card-header">
+                <div className="card-title">Edit Costing Items</div>
+                <span className="badge badge-neutral">{confirmedItems.length} items</span>
+              </div>
+              <div style={{ overflowX: 'auto' }}>
+                <table className="data-table" style={{ fontSize: '0.8rem' }}>
+                  <thead>
+                    <tr>
+                      <th>Tag</th><th>Description</th><th>Type</th>
+                      <th className="text-center">Qty</th><th className="text-right">L (mm)</th>
+                      <th className="text-right">W (mm)</th><th className="text-right">T (mm)</th>
+                      <th>Grade</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {confirmedItems.map((item, i) => (
+                      <tr key={i}>
+                        {(['item_tag','description','section_type'] as const).map(key => (
+                          <td key={key}>
+                            <input
+                              className="form-input"
+                              style={{ fontSize: '0.75rem', padding: '0.25rem 0.4rem', minWidth: key === 'description' ? 140 : 70 }}
+                              value={(item as any)[key] ?? ''}
+                              onChange={e => setConfirmedItems(prev => prev.map((x, idx) => idx === i ? { ...x, [key]: e.target.value } : x))}
+                            />
+                          </td>
+                        ))}
+                        {(['quantity','length_mm','width_mm','thickness_mm','material_grade'] as const).map(key => (
+                          <td key={key} className={key !== 'material_grade' ? 'text-right' : ''}>
+                            <input
+                              className="form-input"
+                              style={{ fontSize: '0.75rem', padding: '0.25rem 0.4rem', minWidth: 60, textAlign: key !== 'material_grade' ? 'right' : 'left' }}
+                              value={(item as any)[key] ?? ''}
+                              onChange={e => setConfirmedItems(prev => prev.map((x, idx) => idx === i ? { ...x, [key]: e.target.value || null } : x))}
+                            />
+                          </td>
+                        ))}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
 
           {confirmedItems.length === 0 && (
             <div className="empty-state">
               <div className="empty-state-icon">🔍</div>
               <h3>No items extracted</h3>
-              <p>The AI couldn't find structured dimension data. Try adding more context or a clearer drawing.</p>
+              <p>The AI couldn't find structured data. Try re-extracting with additional context.</p>
             </div>
           )}
 
-          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.75rem', marginTop: '0.5rem' }}>
+          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.75rem', marginTop: '0.25rem' }}>
             <button className="btn btn-secondary" onClick={() => setStep('extract')}>Re-extract</button>
-            <button className="btn btn-primary" onClick={handleConfirm} disabled={loading || !confirmedItems.length}>
+            <button className="btn btn-primary" onClick={handleConfirm} disabled={loading || !confirmedItems.length} style={{ minWidth: 180 }}>
               {loading
                 ? <><span className="spinner" style={{ width: 16, height: 16 }} /> Calculating…</>
                 : <>Confirm & Calculate <ChevronRight size={16} /></>}
@@ -380,61 +744,3 @@ function fmt(v?: number) {
   return `AED ${v.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
 }
 
-function ExtractedItemCard({ item, onChange }: { item: ExtractedItem; onChange: (i: ExtractedItem) => void }) {
-  const conf = item.confidence
-  const confClass = conf >= 0.8 ? 'conf-high' : conf >= 0.5 ? 'conf-medium' : 'conf-low'
-  const isLow = conf < 0.5
-
-  return (
-    <div className={`extraction-item${isLow ? ' flagged' : ''}`}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '0.75rem' }}>
-        <div style={{ flex: 1, display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-          <span style={{ fontWeight: 700, color: 'var(--text-primary)', fontSize: '0.9rem' }}>
-            {item.item_tag || 'Item'}
-          </span>
-          <span className="badge badge-neutral" style={{ fontSize: '0.65rem' }}>{item.section_type}</span>
-          {isLow && <span className="badge badge-warning">⚠ Low Confidence</span>}
-        </div>
-        <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: 4 }}>
-          {(conf * 100).toFixed(0)}%
-          <div className="confidence-bar" style={{ width: 60 }}>
-            <div className={`confidence-fill ${confClass}`} style={{ width: `${conf * 100}%` }} />
-          </div>
-        </div>
-      </div>
-      <div className="grid grid-cols-4 gap-3">
-        {[
-          { label: 'Description', key: 'description', span: 4 },
-          { label: 'Section Type', key: 'section_type' },
-          { label: 'Qty', key: 'quantity' },
-          { label: 'Length (mm)', key: 'length_mm' },
-          { label: 'Width (mm)', key: 'width_mm' },
-          { label: 'Thickness (mm)', key: 'thickness_mm' },
-          { label: 'OD (mm)', key: 'od_mm' },
-          { label: 'Material Grade', key: 'material_grade' },
-          { label: 'Weld Joints', key: 'weld_joints' },
-        ].map(f => (
-          <div key={f.key} className="form-group" style={f.span ? { gridColumn: `span ${f.span}` } : {}}>
-            <label className="form-label" style={{ fontSize: '0.7rem' }}>{f.label}</label>
-            <input
-              className="form-input"
-              style={{ fontSize: '0.8125rem', padding: '0.375rem 0.625rem' }}
-              value={(item as any)[f.key] ?? ''}
-              onChange={e => onChange({ ...item, [f.key]: e.target.value })}
-            />
-          </div>
-        ))}
-      </div>
-      {item.flags?.length > 0 && (
-        <div style={{ marginTop: '0.75rem', display: 'flex', flexDirection: 'column', gap: 4 }}>
-          {item.flags.map((fl, i) => (
-            <div key={i} style={{ fontSize: '0.75rem', color: 'var(--warning-600)', display: 'flex', gap: 4 }}>
-              <AlertTriangle size={12} style={{ flexShrink: 0, marginTop: 2 }} />
-              <span><strong>{fl.field}:</strong> {fl.reason}</span>
-            </div>
-          ))}
-        </div>
-      )}
-    </div>
-  )
-}
