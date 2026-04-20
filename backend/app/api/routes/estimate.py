@@ -257,11 +257,28 @@ async def confirm_extraction(
     if not job:
         raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
 
-    # Save confirmed items as new extraction record
+    # Fetch the original full extraction to preserve costing_sheet_inputs and metadata
+    orig_result = await db.execute(
+        select(ExtractedData).where(
+            ExtractedData.job_id == job.id,
+            ExtractedData.data_type == "full_extraction"
+        ).order_by(ExtractedData.extracted_at.desc())
+    )
+    orig_extraction = orig_result.scalar_one_or_none()
+    orig_metadata = orig_extraction.extracted_json if orig_extraction else {}
+
+    # Save confirmed items with original metadata preserved
     confirmed_ed = ExtractedData(
         job_id=job.id,
         data_type="confirmed_items",
-        extracted_json={"items": confirmed_items},
+        extracted_json={
+            "items": confirmed_items,
+            # Preserve original extraction metadata
+            "drawing_metadata": orig_metadata.get("drawing_metadata"),
+            "costing_sheet_inputs": orig_metadata.get("costing_sheet_inputs"),
+            "surface_treatment": orig_metadata.get("surface_treatment"),
+            "weight_summary": orig_metadata.get("weight_summary"),
+        },
         is_confirmed=True,
         confirmed_at=datetime.utcnow(),
         confidence=1.0,
@@ -408,13 +425,36 @@ async def generate_excel(
     if not cs:
         raise HTTPException(status_code=404, detail="No costing sheet found")
 
+    # Fetch extracted data (prefer confirmed items, fallback to full extraction)
+    confirmed_result = await db.execute(
+        select(ExtractedData).where(
+            ExtractedData.job_id == job.id,
+            ExtractedData.data_type == "confirmed_items",
+            ExtractedData.is_confirmed == True
+        ).order_by(ExtractedData.extracted_at.desc())
+    )
+    confirmed_data_record = confirmed_result.scalar_one_or_none()
+    
+    if confirmed_data_record:
+        extracted_metadata = confirmed_data_record.extracted_json or {}
+    else:
+        # Fallback to full extraction if no confirmed items yet
+        extracted_result = await db.execute(
+            select(ExtractedData).where(
+                ExtractedData.job_id == job.id,
+                ExtractedData.data_type == "full_extraction"
+            ).order_by(ExtractedData.extracted_at.desc())
+        )
+        extracted_data_record = extracted_result.scalar_one_or_none()
+        extracted_metadata = extracted_data_record.extracted_json if extracted_data_record else {}
+
     job_data = {
         "job_number": job.job_number,
         "client_name": job.client_name or "",
         "project_name": job.project_name or "",
         "project_ref": job.project_ref or "",
         "currency": job.currency or "AED",
-        "_costing_result": cs.totals_json,
+        "extracted_data": extracted_metadata,  # Include extracted costing inputs and metadata
     }
 
     costing_result = {

@@ -142,9 +142,193 @@ Flag any missing mandatory fields (length, section_type, quantity).
 Populate both the richer structured sections and the flattened dimensions list whenever the source contains enough information.
 """
 
-IMAGE_EXTRACTION_PROMPT = """You are a senior structural/mechanical estimator at a UAE-based industrial fabrication company (C&J Gulf Equipment Manufacturing L.L.C.). You are highly experienced in reading ADNOC, Aramco, and EPC engineering drawings for structural steel, pipe supports, skid packages, and module work.
+IMAGE_EXTRACTION_PROMPT = """You are a senior structural/mechanical estimator at C&J Gulf Equipment Manufacturing L.L.C., specializing in ADNOC/Aramco/EPC projects.
 
-You will be given one or more engineering drawing images or PDF pages. Your task is to extract ALL quantifiable fabrication data visible in the drawings and return a structured JSON object that can be used to populate a Job Costing Sheet.
+You will receive engineering drawing images from project documents. Your task is to extract COSTING-CRITICAL data for a Job Costing Sheet with these predefined line items:
+
+**COSTING SHEET LINE ITEMS:**
+- Row 23: Structural Steel Material (unit: Kg, rate: AED/kg)
+- Row 24: Bolts/Fasteners (unit: Nos, rate: AED/piece)
+- Row 25: Paint Material (unit: litres, rate: AED/litre)
+- Row 29: Welding Labour (unit: Kg weld, rate: AED/kg)
+- Row 30: Fabrication Labour (unit: Kg, rate: AED/kg)
+- Row 39: Galvanizing (unit: Kg, rate: AED/kg)
+- Row 40: Blasting (unit: SQM, rate: AED/m²)
+- Row 41: Painting (unit: SQM, rate: AED/m²)
+
+**HEADER DATA TO EXTRACT:**
+From title block, extract:
+- Project name (e.g., "Installation of Upgraded Coke Cooler - Unit 2620")
+- Unit/Area tag (e.g., "Coke Calcination Unit 2620")
+- Drawing number and revision (e.g., "1349001, Rev B")
+- Client name (e.g., "ADNOC Refining")
+- Work Order / PO reference if visible
+- Contractor name
+
+**DETAILED EXTRACTION INSTRUCTIONS:**
+
+**1. STRUCTURAL STEEL MATERIAL (Row 23):**
+For each structural member visible (beams, columns, braces, gussets, plates, angles, etc.):
+- Section designation (e.g., "UC 152x152x30", "L 100x100x10", "Plate 250x150x12")
+- Material grade (typical: S275, A36, IF specified else note "S275 assumed")
+- Length in mm (from dimension lines)
+- Width/Height in mm (for plates and composite sections)
+- Thickness in mm (for plates, flanges)
+- Outer diameter in mm (for pipes)
+- Quantity (number of identical pieces)
+- Use standard steel tables to calculate weight per meter, then: Total weight = (Length/1000 × UnitWeight × Qty)
+
+Examples:
+- UC 152x152x30 @ 3000 mm, qty 2 → (3.0 × 30 × 2) = 180 kg
+- L 100x100x10 @ 2500 mm, qty 4 → (2.5 × 16.5 × 4) = 165 kg
+- Plate 250×150×12 → 0.25 × 0.15 × 0.012 × 7850 × 1 = 35.4 kg
+
+**TOTAL STRUCTURAL STEEL = Sum of all member weights (kg)**
+
+**2. BOLTS & FASTENERS (Row 24):**
+List all bolts, studs, anchors with:
+- Size (M16, M20, M24, etc.)
+- Grade (8.8, A325, A490, etc.)
+- Length (mm)
+- Quantity (count all bolt holes from all supports)
+- Type (set bolts, anchor bolts, studs, etc.)
+
+**TOTAL BOLT QUANTITY = Sum of all bolts (Nos)**
+
+**3. PAINT & PAINT MATERIAL (Row 25):**
+From surface treatment notes, identify:
+- Paint system (e.g., "2-pack epoxy, 150 DFT")
+- Blasting standard (e.g., "Sa 2.5")
+- Estimate paint litres based on surface area: 1 m² ≈ 0.15–0.20 litres (DFT 150 µm = 0.15 L/m²)
+- Calculate or estimate total paintable surface area (m²)
+- If galvanizing noted, deduct galvanized weight from paint area
+
+**PAINT LITRES = Estimated surface area (m²) × 0.15 L/m²** (assuming 150 DFT)
+
+**4. WELDING (Row 29) — Extract weld data:**
+From detail notes and sections, identify:
+- Weld type (fillet, butt, partial penetration, etc.)
+- Weld size (leg size in mm, e.g., 6, 8, 10)
+- Locations (cap plates, member junctions, gusset plates)
+- Estimate total weld length (mm) by counting joints and reading dimensions
+- Use consumables factor: 0.12 kg consumable per 1 m of weld (typical 6 mm fillet)
+- Welding labour: 0.8–1.0 hours per 1 m of weld
+
+**WELD WEIGHT (Consumables) = Total weld length (m) × 0.12 kg/m**
+
+**5. FABRICATION (Row 30) — Labour hours:**
+From bill of quantities or drawing notes:
+- Identify fabrication complexity (simple bolted vs. complex multi-weld vs. machined)
+- Use default labour factor: 0.15 hours per kg of steel for general fabrication
+- If detailed labour breakdown provided, use those hours
+- Adjust for machining, fitting, drilling complexity
+
+**FABRICATION HOURS = Total structural weight (kg) × 0.15 hr/kg** (default, adjust if notes specify)
+
+**6. SURFACE TREATMENT:**
+- **Galvanizing (Row 39):** If noted, quantity = total structural weight (kg)
+- **Blasting (Row 40):** Surface area in m² (calculate from member dimensions)
+- **Painting (Row 41):** Surface area in m² (same as blasting area, unless partial)
+
+Surface area estimation (paint both sides unless noted single-sided):
+- Plate: 2 × (L × W + L × T + W × T) mm² → convert to m²
+- Pipe: π × OD × Length mm² → convert to m²
+- I-beam: Approximate as flat plate of equivalent area
+- Angles: 2 × (2 × L × W + L × T) for symmetric angle
+
+**OUTPUT JSON STRUCTURE:**
+
+{{
+  "drawing_metadata": {{
+    "project_name": "string",
+    "unit_area": "string",
+    "drawing_number": "string",
+    "revision": "string",
+    "client": "string",
+    "contractor": "string",
+    "work_order_number": "string",
+    "general_notes": ["list of relevant notes from title block"]
+  }},
+
+  "costing_sheet_inputs": {{
+    "structural_steel_total_kg": number,            # Row 23
+    "bolt_quantity_nos": number,                     # Row 24
+    "paint_litres": number,                          # Row 25
+    "welding_consumable_kg": number,                 # Row 29 (via consumables rate)
+    "fabrication_hours": number,                     # Row 30
+    "galvanizing_weight_kg": number,                 # Row 39
+    "blasting_area_m2": number,                      # Row 40
+    "painting_area_m2": number                       # Row 41
+  }},
+
+  "structural_elements": [
+    {{
+      "support_tag": "e.g., CS-2620-001",
+      "item_description": "e.g., UC 152x152x30 vertical column",
+      "section_designation": "e.g., UC 152x152x30",
+      "material_grade": "e.g., S275",
+      "length_mm": 3000,
+      "width_mm": 152,
+      "thickness_mm": 9.3,
+      "quantity": 2,
+      "unit_weight_kg_per_m": 30.0,
+      "total_weight_kg": 180.0,
+      "weld_type": "fillet",
+      "weld_size_mm": 8,
+      "weld_length_per_joint_mm": 250,
+      "surface_area_m2": 1.45,
+      "notes": "Vertical supports for pipe rack, existing existing noted with mark 'EXG' in drawing"
+    }}
+  ],
+
+  "bolts_and_plates": [
+    {{
+      "item_description": "M20 × 90 Grade 8.8 Set Bolts",
+      "size_designation": "M20",
+      "grade": "8.8",
+      "length_mm": 90,
+      "quantity": 24,
+      "notes": "For cap plate assembly"
+    }}
+  ],
+
+  "surface_treatment": {{
+    "blasting_standard": "Sa 2.5",
+    "paint_system": "2-pack epoxy, 150 DFT",
+    "galvanizing_required": false,
+    "total_surface_area_m2": 45.3
+  }},
+
+  "weight_summary": {{
+    "total_structural_steel_kg": 2450.5,
+    "total_plates_kg": 187.3,
+    "total_bolts_and_fasteners_kg": 12.4,
+    "grand_total_steel_kg": 2650.2
+  }},
+
+  "ambiguities": [
+    {{
+      "location": "Sheet 2, Support CS-2620-005",
+      "issue": "Bolted vs. welded connection unclear from drawing",
+      "assumption_made": "Assumed bolted (M16 grade 8.8, qty 4 per joint)"
+    }}
+  ],
+
+  "summary": "3-support pipe rack for Coke Cooler Unit 2620. Total steel 2.65 tonnes, bolts 48 nos, blasting & painting 45.3 m². Simple bolted connections, no complex welds."
+}}
+
+**CRITICAL RULES:**
+1. **All dimensions in mm.** Convert from inches (×25.4) or meters (×1000) explicitly.
+2. **Never invent data.** If missing, set to 0, null, or flag in ambiguities.
+3. **Use steel section tables** for unit weights:
+   - UC 152×152×30: 30.0 kg/m
+   - UB 305×127×48: 48.0 kg/m
+   - PFC 150×90×24: 24.0 kg/m
+   - L 100×100×10: 16.5 kg/m
+4. **"TYP" (typical):** Multiply by visible count across all sheets.
+5. **"EXISTING":** Flag but include in weight (unless demolition noted).
+6. **Multi-sheet:** Consolidate all sheets into single JSON; no duplication.
+7. **Return JSON only** — no preamble or explanation.
 
 Filename: {filename}
 {context}
@@ -402,7 +586,8 @@ Return JSON with these fields (use null if not found):
   "delivery_terms": "delivery/incoterms",
   "validity": "validity period",
   "commercial_assumptions": ["assumptions made by the quoting party"],
-  "contact_person": "contact name",
+  "contact_person": "contact name (full name if available)",
+  "contact_salutation": "honorific for the contact person: 'Mr.' if male or unknown, 'Mrs.' if female/married, 'Ms.' if female/unmarried — derive from name, context, or explicit title in the document",
   "date": "quotation date",
   "currency": "currency",
   "raw_extracted": {{}}
@@ -422,30 +607,31 @@ Company Information:
 
 CRITICAL EXECUTION RULES:
 1. FABRICATION-ONLY SCOPE: You MUST explicitly use the "disclaimer" from template_clauses in the introduction. State clearly that the scope is strictly shop fabrication only.
-2. LEGAL FIDELITY: Select the most relevant sections from the 34-clause library. For Each section ID (scope, exclusions, etc.), rewrite the content to be professional but grounded in the specific clause summaries provided.
-3. TONE: Senior Engineering/Commercial. Use formal language like "We refer to the finalized techno-commercial discussions...", "shalt be deemed excluded...", and "mutual understanding prior to contractual progression."
+2. LEGAL FIDELITY: Select the most relevant sections from the 34-clause library. Rewrite each section professionally but grounded in the specific clause summaries provided.
+3. TONE: Senior Engineering/Commercial. Use formal language like "We refer to the finalized techno-commercial discussions...", "shall be deemed excluded...", and "mutual understanding prior to contractual progression."
 4. NO INVENTIONS: Do not invent pricing or technical specifications not in the quotation data.
 5. STRUCTURE: Match this JSON format exactly.
+6. SCOPE EXCLUSIONS: When listing exclusions in the scope section, do NOT include the phrases "engineering and design responsibility", "preparation of fabrication drawings", "site installation", or "commissioning" — these must be omitted from the exclusion list entirely.
+7. SALUTATION: Use the contact_salutation from quotation data to form the greeting: e.g. "Dear Mr. Ahmed," or "Dear Mrs. Khan,". If contact name is unavailable, use "Dear Sir/Madam,".
 
 Return JSON:
 {{
   "date": "current date in DD-MMM-YYYY format",
-  "to_name": "recipient name",
-  "to_company": "recipient company",
-  "subject": "Re: Fabrication Quotation for [project name] - Ref: [quotation ref]",
+  "to_name": "recipient contact person name",
+  "to_company": "recipient company name",
   "reference": "CNJ/[ref]/01/2026",
+  "salutation": "e.g. Dear Mr. Ahmed, or Dear Sir/Madam,",
   "sections": [
     {{"section_id": "introduction", "title": "Introduction", "content": "..."}},
-    {{"section_id": "scope", "title": "Scope of Work – Fabrication Only", "content": "..."}},
+    {{"section_id": "scope", "title": "Scope of Work \u2013 Fabrication Only", "content": "..."}},
     {{"section_id": "drawings", "title": "Drawings, Design Responsibility & AFC Status", "content": "..."}},
     {{"section_id": "weight_assumptions", "title": "Quantity, Weight Basis & Commercial Assumptions", "content": "..."}},
     {{"section_id": "inspection", "title": "Inspection, Testing & Final Acceptance", "content": "..."}},
     {{"section_id": "delivery", "title": "Delivery Terms & Risk Transfer", "content": "..."}},
     {{"section_id": "schedule", "title": "Schedule & Prerequisites", "content": "..."}},
     {{"section_id": "payment", "title": "Payment Terms, Warranty & Liability", "content": "..."}},
-    {{"section_id": "validity", "title": "Validity & Contractual Basis", "content": "..."}}
+    {{"section_id": "validity", "title": "Validity & Contractual Basis", "content": "brief validity statement only — do not include closing paragraphs"}}
   ],
-  "closing": "Formal closing paragraph expressing appreciation for the opportunity.",
   "signatory_name": "from company_info",
   "signatory_title": "from company_info"
 }}

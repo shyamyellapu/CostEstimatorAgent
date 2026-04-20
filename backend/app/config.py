@@ -39,6 +39,10 @@ class Settings(BaseSettings):
     signatory_name: str = "Bilal Ahmed"
     signatory_title: str = "Cost & Estimation Engineer"
 
+    # Cover letter template
+    cover_letter_master_template_path: str = "ReferenceFiles/MASTER FABRICATION Template.docx"
+    cover_letter_header_footer_docx_path: str = "ReferenceFiles/Header and Footer.docx"
+
     # CORS
     allowed_origins: List[str] = ["http://localhost:5173", "http://localhost:3000"]
 

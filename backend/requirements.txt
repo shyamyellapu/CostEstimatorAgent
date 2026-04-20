@@ -5,7 +5,8 @@ pydantic==2.10.3
 pydantic-settings==2.6.1
 python-multipart==0.0.12
 requests==2.32.3
-urllib3<2.0.0
+urllib3>=2.2.3,<3.0.0
+chardet>=5.2.0,<6.0.0
 
 # Database (SQLite for dev, PostgreSQL for prod)
 sqlalchemy==2.0.36

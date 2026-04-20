@@ -4,9 +4,27 @@ import { Upload, FileText, AlertTriangle, Download, CheckCircle } from 'lucide-r
 import { api } from '../api/client'
 import toast from 'react-hot-toast'
 
+function getFilenameFromDisposition(disposition?: string | null) {
+  if (!disposition) return null
+  const utf8Match = disposition.match(/filename\*=UTF-8''([^;]+)/i)
+  if (utf8Match?.[1]) return decodeURIComponent(utf8Match[1])
+  const asciiMatch = disposition.match(/filename="?([^";]+)"?/i)
+  return asciiMatch?.[1] ?? null
+}
+
+function triggerDownload(blob: Blob, filename: string) {
+  const url = URL.createObjectURL(blob)
+  const anchor = document.createElement('a')
+  anchor.href = url
+  anchor.download = filename
+  document.body.appendChild(anchor)
+  anchor.click()
+  anchor.remove()
+  URL.revokeObjectURL(url)
+}
+
 export default function CoverLetterGenerator() {
   const [file, setFile] = useState<File | null>(null)
-  const [jobId, setJobId] = useState('')
   const [loading, setLoading] = useState(false)
   const [parsed, setParsed] = useState<any>(null)
   const [pdfBlob, setPdfBlob] = useState<Blob | null>(null)
@@ -33,28 +51,30 @@ export default function CoverLetterGenerator() {
 
   const generate = async () => {
     if (!file) { toast.error('Quotation upload is required to generate a cover letter'); return }
-    if (!jobId.trim()) { toast.error('Please enter a Job ID'); return }
     setLoading(true)
     try {
       const fd = new FormData()
       fd.append('quotation_file', file)
-      fd.append('job_id', jobId)
       const res = await api.post('/cover-letter/generate', fd, {
         headers: { 'Content-Type': 'multipart/form-data' },
         responseType: 'blob',
       })
-      setPdfBlob(res.data)
-      setPdfName(`${jobId}_cover_letter.pdf`)
+      const fallbackName = `${(parsed?.reference_number || parsed?.project || 'cover_letter').toString().replace(/[^A-Za-z0-9._-]+/g, '_')}_cover_letter.pdf`
+      const responseFilename = getFilenameFromDisposition(res.headers['content-disposition'])
+      const resolvedName = responseFilename || fallbackName
+      const blob = res.data instanceof Blob ? res.data : new Blob([res.data], { type: 'application/pdf' })
+
+      setPdfBlob(blob)
+      setPdfName(resolvedName)
+      triggerDownload(blob, resolvedName)
       toast.success('Cover letter generated!')
     } catch (e: any) { toast.error(e.message) }
     finally { setLoading(false) }
   }
 
   const downloadPdf = () => {
-    if (!pdfBlob) return
-    const url = URL.createObjectURL(pdfBlob)
-    const a = document.createElement('a'); a.href = url; a.download = pdfName; a.click()
-    URL.revokeObjectURL(url)
+    if (!pdfBlob || !pdfName) return
+    triggerDownload(pdfBlob, pdfName)
   }
 
   return (
@@ -87,11 +107,6 @@ export default function CoverLetterGenerator() {
                   : <><div className="upload-title">Drop quotation PDF here</div><div className="upload-subtitle">Only PDF supported</div></>
                 }
               </div>
-              <div className="form-group mt-4">
-                <label className="form-label">Job ID <span className="required">*</span></label>
-                <input className="form-input" placeholder="Enter Job ID from estimate…" value={jobId} onChange={e => setJobId(e.target.value)} />
-                <span className="form-help">The Job ID links the cover letter to the costed job</span>
-              </div>
             </div>
           </div>
 
@@ -100,7 +115,7 @@ export default function CoverLetterGenerator() {
               {loading ? <span className="spinner" style={{ width: 16, height: 16 }} /> : <FileText size={16} />}
               Preview Parsed Data
             </button>
-            <button className="btn btn-primary" onClick={generate} disabled={loading || !file || !jobId} style={{ flex: 1 }}>
+            <button className="btn btn-primary" onClick={generate} disabled={loading || !file} style={{ flex: 1 }}>
               {loading ? <><span className="spinner" style={{ width: 16, height: 16 }} /> Generating…</> : 'Generate PDF →'}
             </button>
           </div>

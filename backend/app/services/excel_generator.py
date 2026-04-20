@@ -55,12 +55,16 @@ class ExcelGenerator:
     ) -> None:
         totals = costing_result or {}
         line_items = totals.get("line_items", []) or []
+        extracted_data = job_data.get("extracted_data", {}) or {}
 
-        # Header fields
-        job_number = str(job_data.get("job_number") or "")
-        client_name = str(job_data.get("client_name") or "")
-        project_name = str(job_data.get("project_name") or "")
-        project_ref = str(job_data.get("project_ref") or "")
+        # ──────────────────────────────────────────────────────────────
+        # HEADER SECTION (Rows 1-12)
+        # ──────────────────────────────────────────────────────────────
+        job_number = str(job_data.get("job_number") or job_data.get("reference_number") or "")
+        client_name = str(job_data.get("client_name") or extracted_data.get("client") or "")
+        project_name = str(job_data.get("project_name") or extracted_data.get("project_name") or "")
+        project_ref = str(job_data.get("project_ref") or extracted_data.get("drawing_number") or "")
+        unit_area = str(extracted_data.get("unit_area") or "")
 
         ws["A3"] = f"REF NO: {job_number}" if job_number else "REF NO:"
         ws["C4"] = client_name
@@ -68,84 +72,171 @@ class ExcelGenerator:
         ws["O4"] = project_ref
         ws["O5"] = job_number
         ws["C7"] = project_name
-        ws["G7"] = "X" if "module" in project_name.lower() else ""
+        ws["G7"] = "X" if ("module" in project_name.lower() or "module" in unit_area.lower()) else ""
 
-        total_weight = self._safe_float(totals.get("total_weight_kg"))
+        # ──────────────────────────────────────────────────────────────
+        # EXTRACT COSTING DATA FROM RESULTS & EXTRACTED DATA
+        # ──────────────────────────────────────────────────────────────
+        total_weight_kg = self._safe_float(totals.get("total_weight_kg"))
         total_material_cost = self._safe_float(totals.get("total_material_cost"))
         total_direct_cost = self._safe_float(totals.get("total_direct_cost"))
+        total_fabrication_cost = self._safe_float(totals.get("total_fabrication_cost"))
+        total_welding_cost = self._safe_float(totals.get("total_welding_cost"))
+        total_consumables_cost = self._safe_float(totals.get("total_consumables_cost"))
+        total_surface_treatment_cost = self._safe_float(totals.get("total_surface_treatment_cost"))
         overhead_cost = self._safe_float(totals.get("overhead_cost"))
         selling_price = self._safe_float(totals.get("selling_price"))
         profit_amount = self._safe_float(totals.get("profit_amount"))
-        total_consumables_cost = self._safe_float(totals.get("total_consumables_cost"))
 
+        # Extracted costing inputs from AI extraction
+        costing_inputs = extracted_data.get("costing_sheet_inputs", {}) or {}
+        structural_steel_total_kg = self._safe_float(costing_inputs.get("structural_steel_total_kg"), total_weight_kg)
+        bolt_quantity_nos = self._safe_float(costing_inputs.get("bolt_quantity_nos"), 0.0)
+        paint_litres = self._safe_float(costing_inputs.get("paint_litres"), 0.0)
+        welding_consumable_kg = self._safe_float(costing_inputs.get("welding_consumable_kg"), 0.0)
+        fabrication_hours = self._safe_float(costing_inputs.get("fabrication_hours"), 0.0)
+        galvanizing_weight_kg = self._safe_float(costing_inputs.get("galvanizing_weight_kg"), 0.0)
+        blasting_area_m2 = self._safe_float(costing_inputs.get("blasting_area_m2"), 0.0)
+        painting_area_m2 = self._safe_float(costing_inputs.get("painting_area_m2"), 0.0)
+
+        # Fallback: compute from line items if not extracted
+        if not fabrication_hours:
+            fabrication_hours = self._sum_first_present(
+                line_items,
+                ["fabrication_manhours", "fabrication_hours", "manhours", "labor_manhours"],
+            )
         welding_manhours = self._sum_first_present(
             line_items,
             ["welding_manhours", "welding_hours", "weld_manhours", "welding_time_hr"],
-        )
-        fabrication_manhours = self._sum_first_present(
-            line_items,
-            ["fabrication_manhours", "fabrication_hours", "manhours", "labor_manhours"],
         )
         surface_area = self._sum_first_present(
             line_items,
             ["surface_area_m2", "surface_area"],
         )
+        if not blasting_area_m2:
+            blasting_area_m2 = surface_area
+        if not painting_area_m2:
+            painting_area_m2 = surface_area
 
+        # Rates from configuration
         material_rate = self._safe_float(rates.get("material_rate_per_kg"), default=4.0)
-        welding_rate = self._safe_float(rates.get("welding_hourly_rate"), default=45.0)
-        fabrication_rate = self._safe_float(rates.get("fabrication_hourly_rate"), default=45.0)
-        surface_rate = self._safe_float(rates.get("surface_treatment_rate_per_m2"), default=55.0)
+        fabrication_hourly_rate = self._safe_float(rates.get("fabrication_hourly_rate"), default=45.0)
+        welding_hourly_rate = self._safe_float(rates.get("welding_hourly_rate"), default=45.0)
+        consumable_unit_rate = self._safe_float(rates.get("consumable_unit_rate"), default=15.0)
+        surface_treatment_rate = self._safe_float(rates.get("surface_treatment_rate_per_m2"), default=55.0)
 
-        # Material rows from template
+        # ──────────────────────────────────────────────────────────────
+        # ROW 23: STRUCTURAL STEEL MATERIAL (Kg)
+        # ──────────────────────────────────────────────────────────────
         ws["B23"] = "Structural Steel Material"
-        ws["G23"] = total_weight
+        ws["G23"] = structural_steel_total_kg
         ws["H23"] = "Kg"
         ws["J23"] = material_rate
+        # Row 23 formula in K23: =G23*J23
 
-        # If bolt/plate items exist, summarize into row 24; otherwise keep template defaults.
-        bolt_like = [
-            li for li in line_items
-            if str(li.get("section_type", "")).lower() in {"bolt", "plate", "fastener"}
-        ]
-        if bolt_like:
-            top_desc = str(bolt_like[0].get("description") or "Bolts / Plates")
-            qty = sum(self._safe_float(li.get("quantity"), default=0.0) for li in bolt_like)
-            ws["B24"] = top_desc
-            ws["G24"] = qty
-            ws["H24"] = "Nos"
+        # ──────────────────────────────────────────────────────────────
+        # ROW 24: BOLTS / FASTENERS (Nos)
+        # ──────────────────────────────────────────────────────────────
+        ws["B24"] = "M20x90 Long Bolts HEX HD"
+        ws["G24"] = bolt_quantity_nos if bolt_quantity_nos > 0 else ""
+        ws["H24"] = "Nos"
+        # J24 rate kept from template (12.5 AED default)
 
-        ws["I29"] = welding_manhours
-        ws["J29"] = welding_rate
-        ws["I30"] = fabrication_manhours
-        ws["J30"] = fabrication_rate
+        # ──────────────────────────────────────────────────────────────
+        # ROW 25: PAINT MATERIAL (litres)
+        # ──────────────────────────────────────────────────────────────
+        ws["B25"] = "Paint Material"
+        ws["G25"] = paint_litres if paint_litres > 0 else ""
+        ws["H25"] = "litres"
+        # J25 rate kept from template (21 AED default)
 
-        # Consumables and surface treatment lines
-        if total_consumables_cost > 0:
-            ws["J33"] = total_consumables_cost
-        if surface_area > 0:
-            ws["G40"] = surface_area
-            ws["G41"] = surface_area
-        ws["J40"] = surface_rate
-        ws["J41"] = surface_rate
+        # ──────────────────────────────────────────────────────────────
+        # ROW 29: WELDING LABOUR (Kg consumables or Manhours)
+        # ──────────────────────────────────────────────────────────────
+        ws["B29"] = "Structural Welding consumables"
+        # Use welding_consumable_kg if available, else fallback
+        welding_qty = welding_consumable_kg if welding_consumable_kg > 0 else welding_manhours
+        ws["I29"] = welding_qty if welding_qty > 0 else ""
+        ws["H29"] = "Kg" if welding_consumable_kg > 0 else "Hrs"
+        ws["J29"] = consumable_unit_rate if welding_consumable_kg > 0 else welding_hourly_rate
 
-        # Totals block from engine outputs
-        ws["D55"] = total_direct_cost
-        ws["D56"] = overhead_cost
-        ws["D57"] = total_direct_cost + overhead_cost
-        ws["D58"] = selling_price
-        ws["D59"] = profit_amount if profit_amount else (selling_price - (total_direct_cost + overhead_cost))
+        # ──────────────────────────────────────────────────────────────
+        # ROW 30: FABRICATION LABOUR (Manhours)
+        # ──────────────────────────────────────────────────────────────
+        ws["B30"] = "Structural Fabrication labour"
+        ws["I30"] = fabrication_hours if fabrication_hours > 0 else ""
+        ws["H30"] = "Hrs"
+        ws["J30"] = fabrication_hourly_rate
+        # Row 30 formula in K30: =I30*J30
 
-        # Keep profitability formulas aligned to actual totals.
-        ws["F61"] = "Profit Margin"
-        if selling_price > 0:
-            ws["F62"] = (ws["D59"].value or 0) / selling_price
+        # ──────────────────────────────────────────────────────────────
+        # ROW 39: GALVANIZING (Kg)
+        # ──────────────────────────────────────────────────────────────
+        ws["B39"] = "Galvanizing Work"
+        ws["G39"] = galvanizing_weight_kg if galvanizing_weight_kg > 0 else ""
+        ws["H39"] = "Kg"
+        # J39 rate kept from template (2000 AED default or as configured)
 
-        # Ensure numeric formatting for key summary outputs.
-        for cell_ref in ["D55", "D56", "D57", "D58", "D59", "K23", "K24", "K25", "K29", "K30", "K33", "K40", "K41"]:
-            ws[cell_ref].number_format = "#,##0.00"
-        for cell_ref in ["G23", "G24", "G25", "I29", "I30", "G40", "G41"]:
-            ws[cell_ref].number_format = "#,##0.000"
-        ws["F62"].number_format = "0.00%"
+        # ──────────────────────────────────────────────────────────────
+        # ROW 40: BLASTING (SQM)
+        # ──────────────────────────────────────────────────────────────
+        ws["B40"] = f"Blasting ({blasting_area_m2:.2f} Sq M)"
+        ws["G40"] = blasting_area_m2 if blasting_area_m2 > 0 else ""
+        ws["H40"] = "SQM"
+        ws["J40"] = surface_treatment_rate
+        # Row 40 formula in K40: =G40*J40
+
+        # ──────────────────────────────────────────────────────────────
+        # ROW 41: PAINTING (SQM)
+        # ──────────────────────────────────────────────────────────────
+        ws["B41"] = f"Painting ({painting_area_m2:.2f} Sq M)"
+        ws["G41"] = painting_area_m2 if painting_area_m2 > 0 else ""
+        ws["H41"] = "SQM"
+        ws["J41"] = surface_treatment_rate
+        # Row 41 formula in K41: =G41*J41
+
+        # ──────────────────────────────────────────────────────────────
+        # TOTALS SECTION (Rows 55-62)
+        # ──────────────────────────────────────────────────────────────
+        # D55: Total cost (sum of K16:K54 from template formulas)
+        ws["D55"] = total_direct_cost if total_direct_cost > 0 else ""
+
+        # D56: Overheads (from template or calculated)
+        ws["D56"] = overhead_cost if overhead_cost > 0 else ""
+
+        # D57: GRAND TOTAL = D55 + D56
+        grand_total = (total_direct_cost or 0) + (overhead_cost or 0)
+        ws["D57"] = grand_total if grand_total > 0 else ""
+
+        # D58: Selling Price
+        ws["D58"] = selling_price if selling_price > 0 else ""
+
+        # D59: Net Profit = D58 - D57
+        profit = (selling_price or 0) - grand_total
+        ws["D59"] = profit if profit != 0 else ""
+
+        # F61: Profit Margin % = D59 / D58
+        if selling_price and selling_price > 0:
+            ws["F61"] = profit / selling_price
+            ws["F61"].number_format = "0.0%"
+
+        # ──────────────────────────────────────────────────────────────
+        # NUMERIC FORMATTING
+        # ──────────────────────────────────────────────────────────────
+        # Currency format for costs
+        for cell_ref in ["D55", "D56", "D57", "D58", "D59"]:
+            if ws[cell_ref].value:
+                ws[cell_ref].number_format = "#,##0.00"
+
+        # Quantity/Weight format (3 decimals)
+        for cell_ref in ["G23", "G24", "G25", "I29", "I30", "G39", "G40", "G41"]:
+            if ws[cell_ref].value:
+                ws[cell_ref].number_format = "#,##0.000"
+
+        # Rate format (2 decimals)
+        for cell_ref in ["J23", "J29", "J30", "J40", "J41"]:
+            if ws[cell_ref].value:
+                ws[cell_ref].number_format = "#,##0.00"
 
     def _append_rates_sheet(self, wb: Workbook, rates: Dict[str, Any]) -> None:
         ws = wb.create_sheet("RATES & CONFIG")
