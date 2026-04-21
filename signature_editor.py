@@ -60,7 +60,7 @@ except Exception as e:
     print(f"Header/footer load failed: {e}")
 
 
-def generate_pdf(bilal_x, bilal_y, datta_x, datta_y, subash_x, sig_height):
+def generate_pdf(bilal_x, bilal_y, datta_x, datta_y, arjun_x, sig_height):
     """Generate PDF with signatures at specified positions (in points from left margin)."""
     styles = getSampleStyleSheet()
     body = ParagraphStyle("B", parent=styles["Normal"], fontSize=10, leading=14, spaceAfter=4)
@@ -133,18 +133,18 @@ def generate_pdf(bilal_x, bilal_y, datta_x, datta_y, subash_x, sig_height):
     story.append(Paragraph("<b>Bilal Ahmed</b>", bold))
     story.append(Paragraph("Cost &amp; Estimation Engineer.", body))
 
-    # Datta + Subash — each at exact x positions, side by side in table
+    # Gopakumar + Arjun — each at exact x positions, side by side in table
     story.append(Spacer(1, datta_y))  # gap before secondary sigs
 
     half = FRAME_W / 2
     d_img = make_img("Datta C.Sawant Signature.jpg", datta_x)
-    s_img = make_img("subash Valrani Signature.jpg", subash_x)
+    s_img = make_img("arjun gopakumar Signature.jpg", arjun_x)
 
     sig_table = Table(
         [
             [d_img, s_img],
             [Paragraph("<b>Datta C. Sawant</b>", bold),
-             Paragraph("<b>Subash Valrani</b>", bold)],
+             Paragraph("<b>Arjun Gopakumar</b>", bold)],
             [Paragraph("Sr. Mechanical Engineer", body),
              Paragraph("Business Unit Head", body)],
         ],
@@ -201,7 +201,7 @@ add_slider(frame, "Bilal X (pt from left)", 0, FRAME_W, 207, 0)
 add_slider(frame, "Bilal top gap (pt)", 0, 80, 10, 1)
 add_slider(frame, "Datta X (pt from left)", 0, FRAME_W/2, 0, 2)
 add_slider(frame, "Datta top gap (pt)", 0, 80, 14, 3)
-add_slider(frame, "Subash X (pt from left)", 0, FRAME_W/2, 0, 4)
+add_slider(frame, "Arjun X (pt from left)", 0, FRAME_W/2, 0, 4)
 add_slider(frame, "Sig height (pt)", 15, 60, 34, 5)
 
 status = tk.Label(root, text="Adjust sliders and click Generate", bg="#f0f0f0",
@@ -213,7 +213,7 @@ def on_generate():
     by = sliders["Bilal top gap (pt)"].get()
     dx = sliders["Datta X (pt from left)"].get()
     dy = sliders["Datta top gap (pt)"].get()
-    sx = sliders["Subash X (pt from left)"].get()
+    sx = sliders["Arjun X (pt from left)"].get()
     sh = sliders["Sig height (pt)"].get()
     try:
         size = generate_pdf(bx, by, dx, dy, sx, sh)
@@ -227,7 +227,7 @@ def on_copy():
     by = sliders["Bilal top gap (pt)"].get()
     dx = sliders["Datta X (pt from left)"].get()
     dy = sliders["Datta top gap (pt)"].get()
-    sx = sliders["Subash X (pt from left)"].get()
+    sx = sliders["Arjun X (pt from left)"].get()
     sh = sliders["Sig height (pt)"].get()
     text = (
         f"# Signature positions (paste into cover_letter_service.py)\n"
@@ -235,7 +235,7 @@ def on_copy():
         f"BILAL_GAP = {by:.0f}  # pt gap above Bilal sig\n"
         f"DATTA_X = {dx:.0f}   # pt from left edge of left column\n"
         f"DATTA_GAP = {dy:.0f}  # pt gap above secondary sigs\n"
-        f"SUBASH_X = {sx:.0f}  # pt from left edge of right column\n"
+        f"arjun_x = {sx:.0f}  # pt from left edge of right column\n"
         f"SIG_H = {sh:.0f}     # pt signature image height\n"
     )
     root.clipboard_clear()
