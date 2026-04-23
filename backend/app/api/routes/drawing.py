@@ -98,10 +98,10 @@ async def extract_drawing(
         }
     except Exception as e:
         logger.error(f"Drawing extract error: {e}")
-        # Identify specific Groq errors for better UX
+        # Identify specific AI provider errors for better UX
         err_msg = str(e)
-        if "invalid_api_key" in err_msg.lower():
-            raise HTTPException(status_code=401, detail="Invalid Groq API Key. Please check your .env file.")
+        if "invalid_api_key" in err_msg.lower() or "api_key" in err_msg.lower():
+            raise HTTPException(status_code=401, detail="Invalid AI Provider API Key. Please check your .env file.")
         if "model_not_found" in err_msg.lower() or "not found" in err_msg.lower():
             raise HTTPException(status_code=404, detail=f"Model not found or no access: {err_msg}")
         raise HTTPException(status_code=500, detail=err_msg)

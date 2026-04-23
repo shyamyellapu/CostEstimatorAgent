@@ -82,9 +82,17 @@ class GroqProvider(AIProvider):
     ) -> ExtractedDataResponse:
         """Extract engineering data from drawing/screenshot image using vision."""
         image_list = image_bytes if isinstance(image_bytes, list) else [image_bytes]
+        
+        # Determine mime type from filename extension
+        # If PDF, the bytes are actually PNG from pdf_to_images conversion
         ext = filename.rsplit(".", 1)[-1].lower()
-        mime_map = {"jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png"}
-        mime = mime_map.get(ext, "image/png")
+        if ext == "pdf":
+            # PDF files are converted to PNG images by pdf_to_images()
+            mime = "image/png"
+        else:
+            mime_map = {"jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png"}
+            mime = mime_map.get(ext, "image/png")
+        
         context_note = f"\nAdditional context: {additional_context}" if additional_context else ""
 
         user_content = [

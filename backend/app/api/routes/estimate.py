@@ -219,7 +219,9 @@ async def extract_from_files(
                 "data": extraction.model_dump(),
             })
         except Exception as e:
+            import traceback
             logger.error(f"Extraction failed for {uf.original_filename}: {e}")
+            logger.error(f"Full traceback:\n{traceback.format_exc()}")
             uf.is_processed = "failed"
             all_extractions.append({
                 "file_id": str(uf.id),
@@ -327,6 +329,9 @@ async def calculate_costs(
 
     line_items = confirmed_ed.extracted_json.get("items", [])
 
+    # Pass aggregate costing inputs from AI extraction (steel kg, welding hrs, etc.)
+    costing_inputs = confirmed_ed.extracted_json.get("costing_sheet_inputs") or {}
+
     # Load rates from DB
     rates_result = await db.execute(select(RateConfiguration).where(RateConfiguration.is_active == True))
     rate_rows = rates_result.scalars().all()
@@ -338,7 +343,8 @@ async def calculate_costs(
         costing = run_costing_engine(
             job_id=job_id,
             line_items=line_items,
-            rates=rates
+            rates=rates,
+            costing_inputs=costing_inputs,
         )
     except Exception as e:
         logger.error(f"Costing engine error: {e}")
@@ -359,20 +365,39 @@ async def calculate_costs(
         line_items_json=[asdict(item) if hasattr(item, '__dataclass_fields__') else item
                          for item in costing.line_items],
         totals_json={
-            "total_weight_kg": costing.total_weight_kg,
-            "total_material_cost": costing.total_material_cost,
-            "total_manhours": costing.total_manhours,
-            "total_fabrication_cost": costing.total_fabrication_cost,
-            "total_welding_cost": costing.total_welding_cost,
-            "total_consumables_cost": costing.total_consumables_cost,
-            "total_cutting_cost": costing.total_cutting_cost,
-            "total_surface_treatment_cost": costing.total_surface_treatment_cost,
-            "total_direct_cost": costing.total_direct_cost,
-            "overhead_cost": costing.overhead_cost,
-            "profit_amount": costing.profit_amount,
-            "selling_price": costing.selling_price,
-            "overhead_percentage": costing.overhead_percentage,
-            "profit_margin_percentage": costing.profit_margin_percentage,
+            "total_weight_kg":                costing.total_weight_kg,
+            "total_material_cost":            costing.total_material_cost,
+            "total_manhours":                 costing.total_manhours,
+            "total_fabrication_cost":         costing.total_fabrication_cost,
+            "total_welding_manhours":         costing.total_welding_manhours,
+            "total_welding_cost":             costing.total_welding_cost,
+            "total_consumables_cost":         costing.total_consumables_cost,
+            "total_cutting_cost":             costing.total_cutting_cost,
+            "total_surface_treatment_cost":   costing.total_surface_treatment_cost,
+            "total_direct_cost":              costing.total_direct_cost,
+            "overhead_cost":                  costing.overhead_cost,
+            "overhead_percentage":            costing.overhead_percentage,
+            "grand_total":                    costing.grand_total,
+            "profit_amount":                  costing.profit_amount,
+            "profit_margin_percentage":       costing.profit_margin_percentage,
+            "selling_price":                  costing.selling_price,
+            # Detailed breakdown for Excel
+            "bolt_qty":        costing.bolt_qty,
+            "bolt_cost":       costing.bolt_cost,
+            "paint_litres":    costing.paint_litres,
+            "paint_cost":      costing.paint_cost,
+            "welding_hrs":     costing.welding_hrs,
+            "fab_hrs":         costing.fab_hrs,
+            "blasting_m2":     costing.blasting_m2,
+            "blasting_cost":   costing.blasting_cost,
+            "painting_m2":     costing.painting_m2,
+            "painting_cost":   costing.painting_cost,
+            "galv_kg":         costing.galv_kg,
+            "galv_cost":       costing.galv_cost,
+            "mpi_visits":      costing.mpi_visits,
+            "mpi_cost":        costing.mpi_cost,
+            "qaqc_cost":       costing.qaqc_cost,
+            "packing_cost":    costing.packing_cost,
         },
         rates_snapshot_json=rates,
         audit_trail_json=costing.audit_trail,

@@ -6,6 +6,13 @@ from typing import List
 class Settings(BaseSettings):
     # Database
     database_url: str = "sqlite+aiosqlite:///./cost_estimator.db"
+    # PostgreSQL URL format: postgresql+asyncpg://user:password@host:port/dbname
+    
+    # Database Pool Settings (for PostgreSQL)
+    db_pool_size: int = 20
+    db_max_overflow: int = 10
+    db_pool_timeout: int = 30
+    db_pool_recycle: int = 3600
 
     # Storage
     storage_backend: str = "local"
@@ -29,6 +36,8 @@ class Settings(BaseSettings):
     groq_vision_model: str = "llama-3.2-11b-vision-preview"
     anthropic_api_key: str = ""
     claude_model: str = "claude-3-5-sonnet-20241022"
+    claude_model_drawing: str = "claude-sonnet-4-20250514"
+    drawing_costing_template_path: str = "ReferenceFiles/Sample Job Costing Sheet.xlsx"
 
     # Company branding
     company_name: str = "C&J Gulf Equipment Manufacturing LLC"

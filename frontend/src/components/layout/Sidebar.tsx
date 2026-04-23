@@ -1,7 +1,7 @@
 import { NavLink } from 'react-router-dom'
 import {
   LayoutDashboard, PlusCircle, FileSearch, Scale, ClipboardList,
-  FileSpreadsheet, BarChart2, FileText, History, Settings, Zap, X
+  FileSpreadsheet, BarChart2, FileText, History, Settings, Zap, X, Calculator
 } from 'lucide-react'
 
 interface SidebarProps {
@@ -21,6 +21,7 @@ const navSections = [
     label: 'Tools',
     items: [
       { to: '/drawing-reader', icon: FileSearch, label: 'Drawing Reader' },
+      { to: '/drawing-costing', icon: Calculator, label: 'Drawing Costing' },
       { to: '/weight-calculator', icon: Scale, label: 'Weight Calculator' },
       { to: '/boq-parser', icon: ClipboardList, label: 'BOQ Parser' },
     ],
