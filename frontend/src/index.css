@@ -86,6 +86,12 @@
   --transition-fast: 150ms ease;
   --transition-base: 200ms ease;
   --transition-slow: 300ms ease;
+
+  /* Aliases for component compatibility */
+  --accent:       var(--primary-600);
+  --accent-subtle: var(--primary-50);
+  --surface:      var(--bg-surface);
+  --surface-alt:  var(--bg-raised);
 }
 
 /* ─── Reset & Base ───────────────────────────────────────────── */

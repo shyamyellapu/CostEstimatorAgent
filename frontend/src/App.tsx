@@ -3,6 +3,7 @@ import AppLayout from './components/layout/AppLayout'
 import Dashboard from './pages/Dashboard'
 import NewEstimate from './pages/NewEstimate'
 import DrawingReader from './pages/DrawingReader'
+import DrawingCosting from './pages/DrawingCosting'
 import WeightCalculator from './pages/WeightCalculator'
 import BOQParser from './pages/BOQParser'
 import ExcelGenerator from './pages/ExcelGenerator'
@@ -20,6 +21,7 @@ export default function App() {
           <Route path="/dashboard" element={<Dashboard />} />
           <Route path="/estimate/new" element={<NewEstimate />} />
           <Route path="/drawing-reader" element={<DrawingReader />} />
+          <Route path="/drawing-costing" element={<DrawingCosting />} />
           <Route path="/weight-calculator" element={<WeightCalculator />} />
           <Route path="/boq-parser" element={<BOQParser />} />
           <Route path="/excel-generator" element={<ExcelGenerator />} />

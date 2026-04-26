@@ -11,13 +11,25 @@ logger = logging.getLogger(__name__)
 
 
 def extract_text_from_pdf(file_bytes: bytes) -> str:
-    """Extract all text from a PDF file using PyMuPDF with a pypdf fallback."""
+    """Extract all text from a PDF file using PyMuPDF with a pypdf fallback.
+    
+    IMPROVED: Now includes sheet count and page metadata for multi-sheet validation.
+    """
     try:
         import fitz
         doc = fitz.open(stream=file_bytes, filetype="pdf")
         texts = []
-        for page in doc:
-            texts.append(page.get_text())
+        page_count = len(doc)
+        
+        # Add page count metadata at the beginning
+        texts.append(f"=== PDF METADATA: Total Pages = {page_count} ===\n")
+        
+        for page_num, page in enumerate(doc, start=1):
+            # Add page separator for multi-sheet tracking
+            texts.append(f"\n=== PAGE {page_num} of {page_count} ===\n")
+            page_text = page.get_text()
+            texts.append(page_text)
+        
         doc.close()
         return "\n".join(texts)
     except Exception as e:
@@ -27,7 +39,13 @@ def extract_text_from_pdf(file_bytes: bytes) -> str:
         from pypdf import PdfReader
         reader = PdfReader(io.BytesIO(file_bytes))
         texts = []
-        for page in reader.pages:
+        page_count = len(reader.pages)
+        
+        # Add page count metadata
+        texts.append(f"=== PDF METADATA: Total Pages = {page_count} ===\n")
+        
+        for page_num, page in enumerate(reader.pages, start=1):
+            texts.append(f"\n=== PAGE {page_num} of {page_count} ===\n")
             page_text = page.extract_text() or ""
             if page_text.strip():
                 texts.append(page_text)

@@ -50,6 +50,10 @@ class DrawingMetadata(BaseModel):
     work_order_number: Optional[str] = ""
     scale: Optional[str] = ""
     date_issued: Optional[str] = ""
+    total_sheets_in_drawing: Optional[int] = None
+    sheets_provided: Optional[int] = None
+    sheets_processed: Optional[int] = None
+    material_standard: Optional[str] = ""
     referenced_drawings: List[str] = []
     general_notes: List[str] = []
 
@@ -106,6 +110,18 @@ class CostEstimationInputs(BaseModel):
     paint_litres_estimated: float = 0
 
 
+class CostingSheetInputs(BaseModel):
+    """Aggregate inputs from AI extraction — feed directly into the costing engine."""
+    structural_steel_total_kg: float = 0.0
+    bolt_quantity_nos: int = 0
+    paint_litres: float = 0.0
+    welding_hours: float = 0.0
+    fabrication_hours: float = 0.0
+    galvanizing_weight_kg: float = 0.0
+    blasting_area_m2: float = 0.0
+    painting_area_m2: float = 0.0
+
+
 class AmbiguityItem(BaseModel):
     location: str
     issue: str
@@ -119,6 +135,7 @@ class ExtractedDataResponse(BaseModel):
     surface_treatment: Optional[SurfaceTreatmentData] = None
     weight_summary: Optional[WeightSummary] = None
     cost_estimation_inputs: Optional[CostEstimationInputs] = None
+    costing_sheet_inputs: Optional[CostingSheetInputs] = None
     ambiguities: List[AmbiguityItem] = []
     
     # Backward compatibility fields (Flattened versions of above)

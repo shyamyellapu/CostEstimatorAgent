@@ -100,29 +100,130 @@ The agent follows an industry-standard estimation pipeline:
 
 ## 🚀 Installation & Setup
 
-1.  **Clone the Repository**:
-    ```bash
-    git clone <repo-url>
-    cd CostEstimatorAgent
+### Prerequisites
+- **Python 3.10+**
+- **Node.js 18+**
+- **PostgreSQL 14+** (recommended for production) or SQLite (for development)
+
+### Quick Start (3 Options)
+
+#### Option 1: Quick Setup Script (Windows - Recommended)
+```powershell
+cd backend
+.\setup_db.ps1
+```
+This script will:
+- Create PostgreSQL database
+- Set up environment variables
+- Install Python dependencies
+- Initialize database with seed data
+
+#### Option 2: Manual Setup with PostgreSQL
+
+1.  **Install PostgreSQL**:
+    ```powershell
+    # Windows (Chocolatey)
+    choco install postgresql
+    
+    # macOS
+    brew install postgresql
+    
+    # Ubuntu/Debian
+    sudo apt install postgresql postgresql-contrib
     ```
 
-2.  **Backend Setup**:
+2.  **Create Database**:
+    ```sql
+    psql -U postgres
+    CREATE DATABASE cost_estimator;
+    \q
+    ```
+
+3.  **Backend Setup**:
     ```bash
     cd backend
     pip install -r requirements.txt
-    # Create .env from .env.example and add your GROQ_API_KEY
-    python -m uvicorn app.main:app --reload
+    
+    # Copy environment file
+    copy .env.example .env  # Windows
+    # OR
+    cp .env.example .env    # Linux/macOS
+    
+    # Update .env with your PostgreSQL credentials:
+    # DATABASE_URL=postgresql+asyncpg://postgres:your_password@localhost:5432/cost_estimator
+    # Add your GROQ_API_KEY
+    
+    # Initialize database
+    python init_db.py init
+    
+    # Start server
+    uvicorn app.main:app --reload
     ```
 
-3.  **Frontend Setup**:
+4.  **Frontend Setup**:
     ```bash
     cd frontend
     npm install
     npm run dev
     ```
 
-4.  **One-Click Start (Windows)**:
-    Run the `run.ps1` script to launch both servers automatically.
+#### Option 3: Development Setup with SQLite
+
+1.  **Backend Setup**:
+    ```bash
+    cd backend
+    pip install -r requirements.txt
+    
+    # Copy environment file
+    copy .env.example .env
+    
+    # Update .env to use SQLite:
+    # DATABASE_URL=sqlite+aiosqlite:///./cost_estimator.db
+    # Add your GROQ_API_KEY
+    
+    # Initialize database
+    python init_db.py init
+    
+    # Start server
+    python -m uvicorn app.main:app --reload
+    ```
+
+2.  **Frontend Setup**:
+    ```bash
+    cd frontend
+    npm install
+    npm run dev
+    ```
+
+### Database Management Commands
+
+```powershell
+# Initialize database (create tables + seed data)
+python init_db.py init
+
+# Reset database (drop + create + seed)
+python init_db.py reset
+
+# Test database connection
+python init_db.py test
+
+# Run database migrations (Alembic)
+alembic upgrade head
+
+# Generate new migration
+alembic revision --autogenerate -m "description"
+```
+
+### Configuration
+
+Edit `backend/.env` to configure:
+- **Database**: PostgreSQL or SQLite connection
+- **AI Provider**: Groq or Anthropic API keys
+- **Storage**: Local, Azure, or AWS S3
+- **Company Branding**: Name, address, signatory details
+- **Connection Pooling**: Pool size and timeout settings
+
+For detailed database setup instructions, see [backend/DATABASE_SETUP.md](backend/DATABASE_SETUP.md).
 
 ---
 
@@ -177,7 +278,10 @@ Once the backend is running, you can explore the full Interactive Swagger docume
 
 ---
 *Built for excellence in fabrication engineering.*
-#   C o s t E s t i m a t o r A g e n t  
- #   C o s t E s t i m a t o r A g e n t  
- #   C o s t E s t i m a t o r A g e n t  
+#   C o s t E s t i m a t o r A g e n t 
+ 
+ #   C o s t E s t i m a t o r A g e n t 
+ 
+ #   C o s t E s t i m a t o r A g e n t 
+ 
  

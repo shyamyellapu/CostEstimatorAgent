@@ -16,6 +16,7 @@ from app.models import job, uploaded_file, extracted_data, costing_sheet
 from app.models import quotation, cover_letter, rate_config, chat_history, audit_log
 
 from app.api.routes import estimate, cover_letter as cl_routes, chat, boq, drawing, history, settings as settings_routes
+from app.api.routes import drawing_costing as drawing_costing_routes
 
 
 @asynccontextmanager
@@ -55,7 +56,8 @@ app.include_router(chat.router,           prefix="/api/chat",          tags=["Ch
 app.include_router(boq.router,            prefix="/api/boq",           tags=["BOQ"])
 app.include_router(drawing.router,        prefix="/api/drawing",       tags=["Drawing"])
 app.include_router(history.router,        prefix="/api/history",       tags=["History"])
-app.include_router(settings_routes.router,prefix="/api/settings",      tags=["Settings"])
+app.include_router(settings_routes.router,    prefix="/api/settings",         tags=["Settings"])
+app.include_router(drawing_costing_routes.router, prefix="/api/drawing-costing", tags=["Drawing Costing"])
 
 # Static files for local storage
 storage_path = Path(settings.local_storage_path)
