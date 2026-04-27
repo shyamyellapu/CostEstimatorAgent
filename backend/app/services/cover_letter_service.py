@@ -5,6 +5,9 @@ REQUIRES quotation upload. Cannot generate without parsed quotation data.
 import logging
 import json
 import io
+
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Image, Table, PageBreak
+from reportlab.lib.styles import getSampleStyleSheet
 from typing import Dict, Any, Optional
 from pathlib import Path
 
@@ -427,48 +430,57 @@ class CoverLetterService:
         project_root = Path(__file__).resolve().parents[3]
         sig_dir = project_root / "ReferenceFiles"
         sig_h = 38  # pt — tuned via signature_editor
+        arjun_h = 200  # Increased height for Arjun Gopakumar's signature
 
-        def _sig_img(filename):
+        def _sig_img(filename, height=None):
+            h = height if height is not None else sig_h
             p = sig_dir / filename
             if not p.exists():
-                return Spacer(1, sig_h)
+                return Spacer(1, h)
             reader = ImageReader(str(p))
             iw, ih = reader.getSize()
-            img = RLImage(str(p), width=sig_h * (iw / ih), height=sig_h)
+            print(f"Processing image: {filename}")
+            print(f"Original dimensions: width={iw}, height={ih}")
+            print(f"Calculated dimensions: width={h * (iw / ih)}, height={h}")
+            img = RLImage(str(p), width=h * (iw / ih), height=h)
             img.hAlign = 'LEFT'
             return img
 
         bilal_img  = _sig_img("BilalAhmed Signature.jpg")
         datta_img  = _sig_img("Datta C.Sawant Signature.jpg")
-        subash_img = _sig_img("subash Valrani Signature.jpg")
+        arjun_img = _sig_img("arjun gopakumar Signature.png", height=arjun_h)
+        # arjun_img = _sig_img("sign resized.png")
 
         # Bilal: left-aligned signature, name/title
-        story.append(Spacer(1, 10))  # BILAL_GAP
+        story.append(Spacer(1, 5))  # Reduced gap for Bilal's signature
         story.append(bilal_img)
         story.append(Paragraph("<b>Bilal Ahmed</b>", bold_style))
         story.append(Paragraph("Cost &amp; Estimation Engineer.", body_style))
         story.append(Spacer(1, 14))  # DATTA_GAP
 
-        # Datta + Subash side-by-side
+        # Gopakumar + Arjun side-by-side
         half = frame_width / 2
         sig_table = Table(
             [
-                [datta_img, subash_img],
+                [datta_img, arjun_img],
                 [Paragraph("<b>Datta C. Sawant</b>", bold_style),
-                 Paragraph("<b>Subash Valrani</b>", bold_style)],
+                 Paragraph("<b>Arjun Gopakumar</b>", bold_style)],
                 [Paragraph("Sr. Mechanical Engineer", body_style),
                  Paragraph("Business Unit Head", body_style)],
             ],
             colWidths=[half, half],
         )
         sig_table.setStyle(TableStyle([
-            ('VALIGN',        (0, 0), (-1, -1), 'TOP'),
-            ('LEFTPADDING',   (0, 0), (-1, -1), 0),
-            ('RIGHTPADDING',  (0, 0), (-1, -1), 0),
-            ('TOPPADDING',    (0, 0), (-1, -1), 1),
-            ('BOTTOMPADDING', (0, 0), (-1, -1), 1),
+            ('VALIGN',        (0, 0), (-1, -1), 'MIDDLE'),
+            ('LEFTPADDING',   (0, 0), (-1, -1), 2),
+            ('RIGHTPADDING',  (0, 0), (-1, -1), 2),
+            ('TOPPADDING',    (0, 0), (-1, -1), 0),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 0),
         ]))
         story.append(sig_table)
+
+        # Add a page break to ensure signatures are on the last page
+        story.append(PageBreak())
 
         doc.build(story)
         buf.seek(0)
