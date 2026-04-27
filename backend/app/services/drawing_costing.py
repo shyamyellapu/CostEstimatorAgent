@@ -26,6 +26,14 @@ from app.config import settings
 
 logger = logging.getLogger(__name__)
 
+
+def sanitize_sheet_title(title: str) -> str:
+    """Sanitize Excel sheet title: remove invalid chars [/\\?*[}], collapse spaces, truncate to 31 chars."""
+    invalid_chars = r'[/\\?*\[\]]'
+    sanitized = re.sub(invalid_chars, '', title)
+    sanitized = re.sub(r'\s+', ' ', sanitized).strip()
+    return sanitized[:31]
+
 # ---------------------------------------------------------------------------
 # Section-weight lookup table (kg/m)
 # ---------------------------------------------------------------------------
@@ -352,7 +360,7 @@ def generate_excel(costing: dict, project: dict, customer: dict) -> BytesIO:
 
     # Rename sheet to "{jobNo}- Structure Frame"
     job_no = str(customer.get("jobNo") or "XXXX")
-    ws.title = f"{job_no}- Structure Frame"[:31]  # Excel max 31 chars
+    ws.title = sanitize_sheet_title(f"{job_no}- Structure Frame")
 
     T   = costing["total_steel_kg"]
     SA  = costing["surface_area_sqm"]
