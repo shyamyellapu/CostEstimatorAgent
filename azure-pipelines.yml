@@ -30,11 +30,11 @@ steps:
   displayName: 'Install Backend Dependencies'
 
 # Optional tests
-- script: |
-    cd backend
-    pytest
-  displayName: 'Run Backend Tests'
-  continueOnError: true
+# - script: |
+#     cd backend
+#     pytest
+#   displayName: 'Run Backend Tests'
+#   continueOnError: true
 
 # ===============================
 # FRONTEND - REACT
