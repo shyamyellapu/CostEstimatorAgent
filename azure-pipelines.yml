@@ -1,0 +1,66 @@
+# Starter pipeline
+# Start with a minimal pipeline that you can customize to build and deploy your code.
+# Add steps that build, run tests, deploy, and more:
+# https://aka.ms/yaml
+
+trigger:
+- main
+
+pool:
+  vmImage: 'ubuntu-latest'
+
+variables:
+  pythonVersion: '3.11'
+
+steps:
+
+# ===============================
+# BACKEND - FASTAPI
+# ===============================
+
+- task: UsePythonVersion@0
+  inputs:
+    versionSpec: '$(pythonVersion)'
+  displayName: 'Use Python 3.11'
+
+- script: |
+    cd backend
+    python -m pip install --upgrade pip
+    pip install -r requirements.txt
+  displayName: 'Install Backend Dependencies'
+
+# Optional tests
+# - script: |
+#     cd backend
+#     pytest
+#   displayName: 'Run Backend Tests'
+#   continueOnError: true
+
+# ===============================
+# FRONTEND - REACT
+# ===============================
+
+- task: NodeTool@0
+  inputs:
+    versionSpec: '18.x'
+  displayName: 'Install Node.js'
+
+- script: |
+    cd frontend
+    npm install
+  displayName: 'Install Frontend Dependencies'
+
+- script: |
+    cd frontend
+    npm run build
+  displayName: 'Build React App'
+
+# ===============================
+# PUBLISH BUILD
+# ===============================
+
+- task: PublishBuildArtifacts@1
+  inputs:
+    PathtoPublish: 'frontend/dist'
+    ArtifactName: 'frontend-build'
+    publishLocation: 'Container'
