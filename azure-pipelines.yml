@@ -42,8 +42,15 @@ steps:
 
 - task: NodeTool@0
   inputs:
-    versionSpec: '18.x'
-  displayName: 'Install Node.js'
+    versionSpec: '20.x'
+  # displayName: 'Install Node.js'
+  displayName: 'Use Node.js 20'
+
+- script: |
+    node -v
+    npm -v
+  displayName: 'Check Node Version'
+
 
 - script: |
     cd frontend
@@ -52,6 +59,7 @@ steps:
 
 - script: |
     cd frontend
+    npm install
     npm run build
   displayName: 'Build React App'
 
