@@ -36,6 +36,39 @@ class ClaudeProvider(AIProvider):
         except ImportError:
             raise ImportError("anthropic package required for ClaudeProvider. Install with: pip install anthropic")
 
+    def _model_rejects_temperature(self) -> bool:
+        """Return True for model families that reject temperature."""
+        model_name = (self.model or "").lower()
+        return model_name.startswith("claude-opus-4-7")
+
+    async def _messages_create(
+        self,
+        *,
+        max_tokens: int,
+        system: str,
+        messages: List[Dict[str, Any]],
+        temperature: Optional[float] = None,
+        model: Optional[str] = None,
+    ):
+        """Create Claude message with compatibility handling for deprecated params."""
+        payload: Dict[str, Any] = {
+            "model": model or self.model,
+            "max_tokens": max_tokens,
+            "system": system,
+            "messages": messages,
+        }
+        if temperature is not None and not self._model_rejects_temperature():
+            payload["temperature"] = temperature
+
+        try:
+            return await self.client.messages.create(**payload)
+        except Exception as e:
+            # Safety retry for models that now reject temperature.
+            if "temperature" in str(e).lower() and "deprecated" in str(e).lower() and "temperature" in payload:
+                payload.pop("temperature", None)
+                return await self.client.messages.create(**payload)
+            raise
+
     @property
     def provider_name(self) -> str:
         return "claude"
@@ -95,6 +128,40 @@ class ClaudeProvider(AIProvider):
             logger.error(f"Content that failed to parse (first 2000 chars): {content[:2000]}")
             raise json.JSONDecodeError(f"Could not parse or repair JSON: {repair_err}", content, 0)
 
+    def _normalize_cover_letter_draft_data(
+        self,
+        data: Dict[str, Any],
+        quotation_data: Dict[str, Any],
+        company_info: Dict[str, str],
+    ) -> Dict[str, Any]:
+        """Backfill required draft fields when the model omits them."""
+        normalized: Dict[str, Any] = dict(data or {})
+
+        to_name = normalized.get("to_name") or quotation_data.get("client") or quotation_data.get("client_name") or ""
+        to_company = normalized.get("to_company") or quotation_data.get("to_company") or to_name
+
+        normalized.setdefault("date", quotation_data.get("date") or quotation_data.get("quotation_date") or "")
+        normalized.setdefault("to_name", to_name)
+        normalized.setdefault("to_company", to_company)
+        normalized.setdefault("subject", "Submission of Techno-Commercial Offer")
+        normalized.setdefault("reference", quotation_data.get("reference_number") or quotation_data.get("reference") or "")
+
+        sections = normalized.get("sections")
+        if not isinstance(sections, list) or not sections:
+            normalized["sections"] = [
+                {
+                    "section_id": "summary",
+                    "title": "Offer Summary",
+                    "content": "Please find attached our techno-commercial offer for your review.",
+                }
+            ]
+
+        normalized.setdefault("closing", "Thank you for your consideration.")
+        normalized.setdefault("signatory_name", company_info.get("signatory_name") or settings.signatory_name)
+        normalized.setdefault("signatory_title", company_info.get("signatory_title") or settings.signatory_title)
+
+        return normalized
+
     async def extract_from_document(
         self,
         file_bytes: bytes,
@@ -113,8 +180,7 @@ class ClaudeProvider(AIProvider):
         )
         
         try:
-            response = await self.client.messages.create(
-                model=self.model,
+            response = await self._messages_create(
                 max_tokens=6000,
                 temperature=0.1,
                 system=SYSTEM_PROMPT_ENGINEER,
@@ -177,8 +243,7 @@ class ClaudeProvider(AIProvider):
             logger.info(f"Calling Claude with model: {self.model}")
             logger.info(f"Image count: {len(image_list)}, MIME type: {mime}")
             
-            response = await self.client.messages.create(
-                model=self.model,
+            response = await self._messages_create(
                 max_tokens=8192,  # Increased for complex drawings
                 temperature=0.0,   # Zero temp for deterministic JSON
                 system=DRAWING_READER_SYSTEM_PROMPT,
@@ -270,8 +335,7 @@ class ClaudeProvider(AIProvider):
         prompt = BOQ_PARSE_PROMPT.format(text=text[:12000], context=context_note)
         
         try:
-            response = await self.client.messages.create(
-                model=self.model,
+            response = await self._messages_create(
                 max_tokens=4096,
                 temperature=0.1,
                 system=SYSTEM_PROMPT_ENGINEER,
@@ -291,8 +355,7 @@ class ClaudeProvider(AIProvider):
         prompt = MEMBER_CLASSIFY_PROMPT.format(description=description)
         
         try:
-            response = await self.client.messages.create(
-                model=self.model,
+            response = await self._messages_create(
                 max_tokens=512,
                 temperature=0.0,
                 system=SYSTEM_PROMPT_ENGINEER,
@@ -315,8 +378,7 @@ class ClaudeProvider(AIProvider):
         prompt = QUOTATION_PARSE_PROMPT.format(text=text[:12000])
         
         try:
-            response = await self.client.messages.create(
-                model=self.model,
+            response = await self._messages_create(
                 max_tokens=4096,
                 temperature=0.1,
                 system=SYSTEM_PROMPT_ENGINEER,
@@ -344,8 +406,7 @@ class ClaudeProvider(AIProvider):
         )
         
         try:
-            response = await self.client.messages.create(
-                model=self.model,
+            response = await self._messages_create(
                 max_tokens=6000,
                 temperature=0.2,
                 system=SYSTEM_PROMPT_ENGINEER,
@@ -356,6 +417,7 @@ class ClaudeProvider(AIProvider):
             
             content = response.content[0].text
             data = self._parse_json_response(content)
+            data = self._normalize_cover_letter_draft_data(data, quotation_data, company_info)
             return CoverLetterDraft(**data)
         except Exception as e:
             logger.error(f"Claude cover letter draft error: {e}")
@@ -371,8 +433,7 @@ class ClaudeProvider(AIProvider):
             system_msg += f"\n\nCurrent job context:\n{context}"
         
         try:
-            response = await self.client.messages.create(
-                model=self.model,
+            response = await self._messages_create(
                 max_tokens=2048,
                 temperature=0.3,
                 system=system_msg,

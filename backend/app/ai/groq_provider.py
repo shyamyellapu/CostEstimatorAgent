@@ -5,6 +5,7 @@ Model selection:
   - Fast/simple tasks:   llama-3.1-8b-instant
 """
 import base64
+import json
 import logging
 from typing import Any, Dict, List, Optional
 
@@ -42,6 +43,40 @@ class GroqProvider(AIProvider):
     @property
     def provider_name(self) -> str:
         return "groq"
+
+    def _normalize_cover_letter_draft_data(
+        self,
+        data: Dict[str, Any],
+        quotation_data: Dict[str, Any],
+        company_info: Dict[str, str],
+    ) -> Dict[str, Any]:
+        """Backfill required draft fields when the model omits them."""
+        normalized: Dict[str, Any] = dict(data or {})
+
+        to_name = normalized.get("to_name") or quotation_data.get("client") or quotation_data.get("client_name") or ""
+        to_company = normalized.get("to_company") or quotation_data.get("to_company") or to_name
+
+        normalized.setdefault("date", quotation_data.get("date") or quotation_data.get("quotation_date") or "")
+        normalized.setdefault("to_name", to_name)
+        normalized.setdefault("to_company", to_company)
+        normalized.setdefault("subject", "Submission of Techno-Commercial Offer")
+        normalized.setdefault("reference", quotation_data.get("reference_number") or quotation_data.get("reference") or "")
+
+        sections = normalized.get("sections")
+        if not isinstance(sections, list) or not sections:
+            normalized["sections"] = [
+                {
+                    "section_id": "summary",
+                    "title": "Offer Summary",
+                    "content": "Please find attached our techno-commercial offer for your review.",
+                }
+            ]
+
+        normalized.setdefault("closing", "Thank you for your consideration.")
+        normalized.setdefault("signatory_name", company_info.get("signatory_name") or settings.signatory_name)
+        normalized.setdefault("signatory_title", company_info.get("signatory_title") or settings.signatory_title)
+
+        return normalized
 
     async def extract_from_document(
         self,
@@ -237,17 +272,19 @@ class GroqProvider(AIProvider):
             company_info=str(company_info)
         )
         try:
-            response = await self.client.chat.completions.create(
+            raw = await self.raw_client.chat.completions.create(
                 model=self.model_large,
-                response_model=CoverLetterDraft,
                 messages=[
                     {"role": "system", "content": SYSTEM_PROMPT_ENGINEER},
                     {"role": "user", "content": prompt}
                 ],
                 temperature=0.2,
                 max_tokens=6000,
+                response_format={"type": "json_object"},
             )
-            return response
+            data = json.loads(raw.choices[0].message.content)
+            data = self._normalize_cover_letter_draft_data(data, quotation_data, company_info)
+            return CoverLetterDraft(**data)
         except Exception as e:
             logger.error(f"Groq cover letter draft error: {e}")
             raise

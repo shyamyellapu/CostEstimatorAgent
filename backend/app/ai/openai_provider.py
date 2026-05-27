@@ -42,6 +42,41 @@ class OpenAIProvider(AIProvider):
     def provider_name(self) -> str:
         return "openai"
 
+    async def _chat_completions_create(self, **kwargs):
+        """Create chat completion with compatibility retries for model-specific params."""
+        payload = dict(kwargs)
+
+        for _ in range(3):
+            try:
+                return await self.client.chat.completions.create(**payload)
+            except Exception as e:
+                msg = str(e).lower()
+
+                # Newer OpenAI models may require max_completion_tokens instead of max_tokens.
+                if (
+                    "unsupported parameter" in msg
+                    and "max_tokens" in msg
+                    and "max_completion_tokens" in msg
+                    and "max_tokens" in payload
+                ):
+                    payload["max_completion_tokens"] = payload.pop("max_tokens")
+                    continue
+
+                # Some models only allow default temperature=1 and reject custom values.
+                if (
+                    "temperature" in msg
+                    and "unsupported value" in msg
+                    and "only the default (1) value is supported" in msg
+                    and "temperature" in payload
+                ):
+                    payload.pop("temperature", None)
+                    continue
+
+                raise
+
+        # Should never be reached because the loop either returns or raises.
+        raise RuntimeError("OpenAI compatibility retry loop exhausted")
+
     def _parse_json_response(self, content: str) -> dict:
         """Parse JSON from OpenAI response, handling markdown code blocks and syntax errors."""
         import re
@@ -84,6 +119,40 @@ class OpenAIProvider(AIProvider):
             logger.error(f"JSON repair also failed: {repair_err}")
             raise json.JSONDecodeError(f"Could not parse or repair JSON: {repair_err}", content, 0)
 
+    def _normalize_cover_letter_draft_data(
+        self,
+        data: Dict[str, Any],
+        quotation_data: Dict[str, Any],
+        company_info: Dict[str, str],
+    ) -> Dict[str, Any]:
+        """Backfill required draft fields when the model omits them."""
+        normalized: Dict[str, Any] = dict(data or {})
+
+        to_name = normalized.get("to_name") or quotation_data.get("client") or quotation_data.get("client_name") or ""
+        to_company = normalized.get("to_company") or quotation_data.get("to_company") or to_name
+
+        normalized.setdefault("date", quotation_data.get("date") or quotation_data.get("quotation_date") or "")
+        normalized.setdefault("to_name", to_name)
+        normalized.setdefault("to_company", to_company)
+        normalized.setdefault("subject", "Submission of Techno-Commercial Offer")
+        normalized.setdefault("reference", quotation_data.get("reference_number") or quotation_data.get("reference") or "")
+
+        sections = normalized.get("sections")
+        if not isinstance(sections, list) or not sections:
+            normalized["sections"] = [
+                {
+                    "section_id": "summary",
+                    "title": "Offer Summary",
+                    "content": "Please find attached our techno-commercial offer for your review.",
+                }
+            ]
+
+        normalized.setdefault("closing", "Thank you for your consideration.")
+        normalized.setdefault("signatory_name", company_info.get("signatory_name") or settings.signatory_name)
+        normalized.setdefault("signatory_title", company_info.get("signatory_title") or settings.signatory_title)
+
+        return normalized
+
     async def extract_from_document(
         self,
         file_bytes: bytes,
@@ -101,7 +170,7 @@ class OpenAIProvider(AIProvider):
             context=context_note
         )
 
-        response = await self.client.chat.completions.create(
+        response = await self._chat_completions_create(
             model=self.model,
             messages=[
                 {"role": "system", "content": SYSTEM_PROMPT_ENGINEER},
@@ -153,7 +222,7 @@ class OpenAIProvider(AIProvider):
                 "image_url": {"url": f"data:{mime};base64,{b64_image}"}
             })
 
-        response = await self.client.chat.completions.create(
+        response = await self._chat_completions_create(
             model=self.model_vision,
             messages=[
                 {"role": "system", "content": DRAWING_READER_SYSTEM_PROMPT},
@@ -218,7 +287,7 @@ class OpenAIProvider(AIProvider):
         context_note = f"\nAdditional context: {additional_context}" if additional_context else ""
         prompt = BOQ_PARSE_PROMPT.format(text=text[:12000], context=context_note)
 
-        response = await self.client.chat.completions.create(
+        response = await self._chat_completions_create(
             model=self.model,
             messages=[
                 {"role": "system", "content": SYSTEM_PROMPT_ENGINEER},
@@ -236,7 +305,7 @@ class OpenAIProvider(AIProvider):
     async def classify_member(self, description: str) -> MemberClassification:
         prompt = MEMBER_CLASSIFY_PROMPT.format(description=description)
         try:
-            response = await self.client.chat.completions.create(
+            response = await self._chat_completions_create(
                 model=self.model_fast,
                 messages=[
                     {"role": "system", "content": SYSTEM_PROMPT_ENGINEER},
@@ -259,7 +328,7 @@ class OpenAIProvider(AIProvider):
     async def parse_quotation(self, text: str) -> Dict[str, Any]:
         prompt = QUOTATION_PARSE_PROMPT.format(text=text[:12000])
         try:
-            response = await self.client.chat.completions.create(
+            response = await self._chat_completions_create(
                 model=self.model,
                 messages=[
                     {"role": "system", "content": SYSTEM_PROMPT_ENGINEER},
@@ -287,7 +356,7 @@ class OpenAIProvider(AIProvider):
             company_info=str(company_info)
         )
         try:
-            response = await self.client.chat.completions.create(
+            response = await self._chat_completions_create(
                 model=self.model,
                 messages=[
                     {"role": "system", "content": SYSTEM_PROMPT_ENGINEER},
@@ -299,6 +368,7 @@ class OpenAIProvider(AIProvider):
             )
             content = response.choices[0].message.content
             data = self._parse_json_response(content)
+            data = self._normalize_cover_letter_draft_data(data, quotation_data, company_info)
             return CoverLetterDraft(**data)
         except Exception as e:
             logger.error(f"OpenAI cover letter draft error: {e}")
@@ -313,7 +383,7 @@ class OpenAIProvider(AIProvider):
         if context:
             system_msg += f"\n\nCurrent job context:\n{context}"
         try:
-            response = await self.client.chat.completions.create(
+            response = await self._chat_completions_create(
                 model=self.model,
                 messages=[{"role": "system", "content": system_msg}] + messages,
                 temperature=0.3,
