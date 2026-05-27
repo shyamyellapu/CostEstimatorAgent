@@ -73,6 +73,37 @@ async def health():
     return {"status": "ok", "version": "1.0.0"}
 
 
+@app.get("/api/ai/info")
+async def ai_info():
+    """Return the currently active AI provider and model configuration."""
+    provider = settings.ai_provider.lower()
+    if provider == "openai":
+        return {
+            "provider": "openai",
+            "primary_model": settings.openai_model,
+            "fast_model": settings.openai_model_fast,
+            "vision_model": settings.openai_model_vision,
+            "fallback_provider": "claude",
+            "fallback_model": settings.claude_model,
+        }
+    if provider == "claude":
+        return {
+            "provider": "claude",
+            "primary_model": settings.claude_model,
+            "fallback_provider": None,
+            "fallback_model": None,
+        }
+    # groq
+    return {
+        "provider": "groq",
+        "primary_model": settings.groq_model_large,
+        "fast_model": settings.groq_model_fast,
+        "vision_model": settings.groq_vision_model,
+        "fallback_provider": None,
+        "fallback_model": None,
+    }
+
+
 @app.get("/")
 async def root():
     return {

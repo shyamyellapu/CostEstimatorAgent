@@ -29,11 +29,18 @@ class Settings(BaseSettings):
     aws_bucket_name: str = ""
 
     # AI
-    ai_provider: str = "groq"
+    ai_provider: str = "openai"
+    # OpenAI
+    openai_api_key: str = ""
+    openai_model: str = "gpt-4o"
+    openai_model_fast: str = "gpt-4o-mini"
+    openai_model_vision: str = "gpt-4o"
+    # Groq
     groq_api_key: str = ""
     groq_model_large: str = "llama-3.3-70b-versatile"
     groq_model_fast: str = "llama-3.1-8b-instant"
     groq_vision_model: str = "llama-3.2-11b-vision-preview"
+    # Anthropic (Claude) — used as fallback when ai_provider=openai
     anthropic_api_key: str = ""
     claude_model: str = "claude-3-5-sonnet-20241022"
     claude_model_drawing: str = "claude-sonnet-4-20250514"

@@ -19,7 +19,6 @@ from io import BytesIO
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-import anthropic
 import openpyxl
 
 from app.config import settings
@@ -134,10 +133,46 @@ def get_kg_per_m(section: str) -> tuple[float, bool]:
 
 
 # ---------------------------------------------------------------------------
-# Step 1: Call Claude vision API
+# Step 1: Call AI vision API (OpenAI primary / Claude fallback)
 # ---------------------------------------------------------------------------
-async def extract_from_pdf(pdf_bytes: bytes) -> dict:
-    """Send PDF to Claude and return parsed JSON extraction."""
+async def _extract_via_openai(pdf_bytes: bytes) -> dict:
+    """Convert PDF pages to images and send to OpenAI vision."""
+    import fitz  # PyMuPDF
+    from openai import AsyncOpenAI
+
+    client = AsyncOpenAI(api_key=settings.openai_api_key)
+
+    # Render each PDF page to a PNG image
+    doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+    user_content: list = [{"type": "text", "text": EXTRACTION_PROMPT}]
+    for page in doc:
+        pix = page.get_pixmap(dpi=150)
+        img_bytes = pix.tobytes("png")
+        b64 = base64.standard_b64encode(img_bytes).decode("utf-8")
+        user_content.append({
+            "type": "image_url",
+            "image_url": {"url": f"data:image/png;base64,{b64}"}
+        })
+    doc.close()
+
+    response = await client.chat.completions.create(
+        model=settings.openai_model_vision,
+        messages=[
+            {"role": "system", "content": "You are a structural steel takeoff engineer."},
+            {"role": "user", "content": user_content},
+        ],
+        max_tokens=4000,
+        temperature=0.0,
+        response_format={"type": "json_object"},
+    )
+    raw = response.choices[0].message.content or ""
+    return _parse_extraction_response(raw)
+
+
+async def _extract_via_claude(pdf_bytes: bytes) -> dict:
+    """Send PDF natively to Claude vision API."""
+    import anthropic
+
     client = anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key)
     pdf_b64 = base64.standard_b64encode(pdf_bytes).decode("utf-8")
 
@@ -159,9 +194,31 @@ async def extract_from_pdf(pdf_bytes: bytes) -> dict:
             ],
         }],
     )
-
     raw = message.content[0].text if message.content else ""
     return _parse_extraction_response(raw)
+
+
+async def extract_from_pdf(pdf_bytes: bytes) -> dict:
+    """Route PDF extraction to the configured AI provider (with automatic fallback)."""
+    provider = settings.ai_provider.lower()
+
+    if provider == "openai":
+        try:
+            print("[AI] Drawing costing: using PRIMARY model OpenAI", settings.openai_model_vision)
+            return await _extract_via_openai(pdf_bytes)
+        except Exception as e:
+            print(f"[AI] OpenAI failed for drawing extraction ({type(e).__name__}: {e}). Falling back to Claude...")
+            logger.warning(f"OpenAI drawing extraction failed: {e}. Retrying with Claude.")
+            print("[AI] Drawing costing: using FALLBACK model Claude", settings.claude_model_drawing)
+            return await _extract_via_claude(pdf_bytes)
+
+    if provider == "claude":
+        print("[AI] Drawing costing: using Claude", settings.claude_model_drawing)
+        return await _extract_via_claude(pdf_bytes)
+
+    # groq does not support native PDF vision — fall back to Claude
+    print("[AI] Drawing costing: Groq unsupported for PDFs, using Claude", settings.claude_model_drawing)
+    return await _extract_via_claude(pdf_bytes)
 
 
 def _parse_extraction_response(raw: str) -> dict:
