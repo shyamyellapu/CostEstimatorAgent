@@ -238,3 +238,292 @@ class AuditLog(Base):
         Index('idx_audit_actor_created', 'actor', 'created_at'),
         Index('idx_audit_job_created', 'job_id', 'created_at'),
     )
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# RFQ PLATFORM MODELS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class RFQStatusEnum(str, enum.Enum):
+    RECEIVED    = "received"
+    CLASSIFYING = "classifying"
+    EXTRACTING  = "extracting"
+    REVIEW      = "review"
+    VALIDATED   = "validated"
+    COSTING     = "costing"
+    QUOTED      = "quoted"
+    CLOSED      = "closed"
+    REJECTED    = "rejected"
+
+
+class GmailCredential(Base):
+    """Stores OAuth2 credentials for connected Gmail mailboxes."""
+    __tablename__ = "gmail_credentials"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=gen_uuid)
+    email_address: Mapped[str] = mapped_column(String(255), unique=True, index=True)
+    display_name: Mapped[Optional[str]] = mapped_column(String(255))
+    credentials_json: Mapped[Optional[dict]] = mapped_column(json_type())   # OAuth2 token dict
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    last_synced: Mapped[Optional[datetime]] = mapped_column(DateTime)
+    sync_history_id: Mapped[Optional[str]] = mapped_column(String(100))    # Gmail historyId for incremental sync
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[Optional[datetime]] = mapped_column(DateTime, onupdate=datetime.utcnow)
+
+    emails: Mapped[List["RFQEmail"]] = relationship("RFQEmail", back_populates="mailbox_credential", lazy="select")
+
+    __table_args__ = (
+        Index('idx_gmail_active', 'is_active'),
+    )
+
+
+class RFQEmail(Base):
+    """An email fetched from Gmail that may contain an RFQ."""
+    __tablename__ = "rfq_emails"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=gen_uuid)
+    gmail_message_id: Mapped[str] = mapped_column(String(200), unique=True, index=True)
+    gmail_thread_id: Mapped[Optional[str]] = mapped_column(String(200), index=True)
+    mailbox_id: Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("gmail_credentials.id", ondelete="SET NULL"), nullable=True, index=True)
+    mailbox_email: Mapped[Optional[str]] = mapped_column(String(255), index=True)
+    subject: Mapped[Optional[str]] = mapped_column(String(1000))
+    sender_email: Mapped[Optional[str]] = mapped_column(String(255), index=True)
+    sender_name: Mapped[Optional[str]] = mapped_column(String(500))
+    recipients: Mapped[Optional[list]] = mapped_column(json_type())
+    body_text: Mapped[Optional[str]] = mapped_column(Text)
+    body_html: Mapped[Optional[str]] = mapped_column(Text)
+    received_at: Mapped[Optional[datetime]] = mapped_column(DateTime, index=True)
+    labels: Mapped[Optional[list]] = mapped_column(json_type())
+    email_type: Mapped[str] = mapped_column(String(50), default="unknown", index=True)  # rfq, revision, clarification, other
+    rfq_id: Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("rfq_records.id", ondelete="SET NULL"), nullable=True, index=True)
+    is_processed: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+
+    mailbox_credential: Mapped[Optional["GmailCredential"]] = relationship("GmailCredential", back_populates="emails")
+    attachments: Mapped[List["RFQAttachment"]] = relationship("RFQAttachment", back_populates="email", lazy="selectin")
+    rfq: Mapped[Optional["RFQRecord"]] = relationship("RFQRecord", back_populates="emails", foreign_keys=[rfq_id])
+
+    __table_args__ = (
+        Index('idx_rfqemail_type_processed', 'email_type', 'is_processed'),
+        Index('idx_rfqemail_received', 'received_at'),
+    )
+
+
+class RFQAttachment(Base):
+    """A file attachment associated with an RFQ (from email or direct upload)."""
+    __tablename__ = "rfq_attachments"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=gen_uuid)
+    email_id: Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("rfq_emails.id", ondelete="SET NULL"), nullable=True, index=True)
+    rfq_id: Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("rfq_records.id", ondelete="CASCADE"), nullable=True, index=True)
+    gmail_attachment_id: Mapped[Optional[str]] = mapped_column(String(500))
+    original_filename: Mapped[str] = mapped_column(String(500))
+    stored_filename: Mapped[Optional[str]] = mapped_column(String(500))
+    mime_type: Mapped[Optional[str]] = mapped_column(String(200))
+    file_size: Mapped[Optional[int]] = mapped_column(Integer)
+    storage_path: Mapped[Optional[str]] = mapped_column(String(1000))
+    storage_url: Mapped[Optional[str]] = mapped_column(String(1000))
+    # Classification
+    file_category: Mapped[str] = mapped_column(String(50), default="other", index=True)  # pdf, excel, word, dwg, zip, image
+    document_type: Mapped[str] = mapped_column(String(100), default="unknown", index=True)  # bom, datasheet, pid, ga_drawing, isometric, specification, rfq
+    revision_number: Mapped[Optional[str]] = mapped_column(String(50))
+    document_number: Mapped[Optional[str]] = mapped_column(String(200))
+    classification_confidence: Mapped[Optional[float]] = mapped_column(Float)
+    classification_metadata: Mapped[Optional[dict]] = mapped_column(json_type())
+    # Processing
+    extraction_status: Mapped[str] = mapped_column(String(50), default="pending", index=True)  # pending, running, completed, failed
+    extraction_error: Mapped[Optional[str]] = mapped_column(Text)
+    extracted_at: Mapped[Optional[datetime]] = mapped_column(DateTime)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+
+    email: Mapped[Optional["RFQEmail"]] = relationship("RFQEmail", back_populates="attachments")
+    rfq: Mapped[Optional["RFQRecord"]] = relationship("RFQRecord", back_populates="attachments", foreign_keys=[rfq_id])
+    line_items: Mapped[List["RFQLineItem"]] = relationship("RFQLineItem", back_populates="source_attachment", lazy="select")
+
+    __table_args__ = (
+        Index('idx_rfqatt_rfq_type', 'rfq_id', 'document_type'),
+        Index('idx_rfqatt_extraction', 'extraction_status'),
+    )
+
+
+class RFQRecord(Base):
+    """Central RFQ object — created from email, upload, or manual entry."""
+    __tablename__ = "rfq_records"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=gen_uuid)
+    rfq_number: Mapped[str] = mapped_column(String(100), unique=True, index=True)
+    client_name: Mapped[Optional[str]] = mapped_column(String(500), index=True)
+    client_email: Mapped[Optional[str]] = mapped_column(String(255), index=True)
+    project_name: Mapped[Optional[str]] = mapped_column(String(500))
+    project_reference: Mapped[Optional[str]] = mapped_column(String(255), index=True)
+    enquiry_date: Mapped[Optional[datetime]] = mapped_column(DateTime, index=True)
+    deadline: Mapped[Optional[datetime]] = mapped_column(DateTime)
+    subject: Mapped[Optional[str]] = mapped_column(String(1000))
+    scope_summary: Mapped[Optional[str]] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(String(50), default="received", index=True)
+    priority: Mapped[str] = mapped_column(String(20), default="normal", index=True)  # low, normal, high, urgent
+    revision_number: Mapped[int] = mapped_column(Integer, default=0)
+    parent_rfq_id: Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("rfq_records.id", ondelete="SET NULL"), nullable=True, index=True)
+    job_id: Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("jobs.id", ondelete="SET NULL"), nullable=True, index=True)
+    source: Mapped[str] = mapped_column(String(50), default="upload", index=True)  # gmail, upload, manual
+    assigned_to: Mapped[Optional[str]] = mapped_column(String(255))
+    tags: Mapped[Optional[list]] = mapped_column(json_type())
+    extra_metadata: Mapped[Optional[dict]] = mapped_column("metadata", json_type())
+    notes: Mapped[Optional[str]] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    updated_at: Mapped[Optional[datetime]] = mapped_column(DateTime, onupdate=datetime.utcnow)
+
+    emails: Mapped[List["RFQEmail"]] = relationship("RFQEmail", back_populates="rfq", foreign_keys="RFQEmail.rfq_id", lazy="select")
+    attachments: Mapped[List["RFQAttachment"]] = relationship("RFQAttachment", back_populates="rfq", foreign_keys="RFQAttachment.rfq_id", lazy="selectin")
+    line_items: Mapped[List["RFQLineItem"]] = relationship("RFQLineItem", back_populates="rfq", cascade="all, delete-orphan", lazy="selectin")
+    validation_results: Mapped[List["ValidationResult"]] = relationship("ValidationResult", back_populates="rfq", cascade="all, delete-orphan", lazy="select")
+    extraction_reviews: Mapped[List["ExtractionReview"]] = relationship("ExtractionReview", back_populates="rfq", cascade="all, delete-orphan", lazy="select")
+    revisions: Mapped[List["RFQRecord"]] = relationship("RFQRecord", foreign_keys=[parent_rfq_id], lazy="select")
+
+    __table_args__ = (
+        Index('idx_rfq_status_created', 'status', 'created_at'),
+        Index('idx_rfq_client_status', 'client_name', 'status'),
+        Index('idx_rfq_enquiry', 'enquiry_date'),
+    )
+
+
+class RFQLineItem(Base):
+    """A single line item extracted from an RFQ (BOM row, specification item, etc.)."""
+    __tablename__ = "rfq_line_items"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=gen_uuid)
+    rfq_id: Mapped[str] = mapped_column(String(36), ForeignKey("rfq_records.id", ondelete="CASCADE"), index=True)
+    source_attachment_id: Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("rfq_attachments.id", ondelete="SET NULL"), nullable=True, index=True)
+    line_number: Mapped[Optional[str]] = mapped_column(String(50))
+    tag_number: Mapped[Optional[str]] = mapped_column(String(200), index=True)
+    description: Mapped[Optional[str]] = mapped_column(Text)
+    material: Mapped[Optional[str]] = mapped_column(String(500), index=True)
+    material_grade: Mapped[Optional[str]] = mapped_column(String(200))
+    material_standard: Mapped[Optional[str]] = mapped_column(String(200))  # ASTM A106, EN 10216, etc.
+    quantity: Mapped[Optional[float]] = mapped_column(Float)
+    unit: Mapped[Optional[str]] = mapped_column(String(50))
+    weight_each_kg: Mapped[Optional[float]] = mapped_column(Float)
+    total_weight_kg: Mapped[Optional[float]] = mapped_column(Float)
+    dimensions: Mapped[Optional[dict]] = mapped_column(json_type())   # {length, width, height, diameter, thickness, etc.}
+    pressure_class: Mapped[Optional[str]] = mapped_column(String(100))
+    surface_treatment: Mapped[Optional[str]] = mapped_column(String(200))
+    drawing_reference: Mapped[Optional[str]] = mapped_column(String(500))
+    remarks: Mapped[Optional[str]] = mapped_column(Text)
+    # Validation & confidence
+    confidence_score: Mapped[Optional[float]] = mapped_column(Float)
+    validation_flags: Mapped[Optional[list]] = mapped_column(json_type())
+    is_confirmed: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    confirmed_by: Mapped[Optional[str]] = mapped_column(String(255))
+    confirmed_at: Mapped[Optional[datetime]] = mapped_column(DateTime)
+    raw_extracted: Mapped[Optional[dict]] = mapped_column(json_type())
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[Optional[datetime]] = mapped_column(DateTime, onupdate=datetime.utcnow)
+
+    rfq: Mapped["RFQRecord"] = relationship("RFQRecord", back_populates="line_items")
+    source_attachment: Mapped[Optional["RFQAttachment"]] = relationship("RFQAttachment", back_populates="line_items")
+
+    __table_args__ = (
+        Index('idx_lineitem_rfq_confirmed', 'rfq_id', 'is_confirmed'),
+        Index('idx_lineitem_material', 'material'),
+    )
+
+
+class ValidationResult(Base):
+    """A single validation finding for an RFQ."""
+    __tablename__ = "validation_results"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=gen_uuid)
+    rfq_id: Mapped[str] = mapped_column(String(36), ForeignKey("rfq_records.id", ondelete="CASCADE"), index=True)
+    line_item_id: Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("rfq_line_items.id", ondelete="SET NULL"), nullable=True, index=True)
+    attachment_id: Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("rfq_attachments.id", ondelete="SET NULL"), nullable=True, index=True)
+    validation_type: Mapped[str] = mapped_column(String(100), index=True)  # quantity, unit, material, dimension, duplicate, scope, revision
+    severity: Mapped[str] = mapped_column(String(20), default="warning", index=True)  # error, warning, info
+    message: Mapped[str] = mapped_column(Text)
+    field_name: Mapped[Optional[str]] = mapped_column(String(200))
+    extracted_value: Mapped[Optional[str]] = mapped_column(String(500))
+    suggested_value: Mapped[Optional[str]] = mapped_column(String(500))
+    confidence: Mapped[Optional[float]] = mapped_column(Float)
+    is_resolved: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    resolved_by: Mapped[Optional[str]] = mapped_column(String(255))
+    resolved_at: Mapped[Optional[datetime]] = mapped_column(DateTime)
+    resolution_note: Mapped[Optional[str]] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+
+    rfq: Mapped["RFQRecord"] = relationship("RFQRecord", back_populates="validation_results")
+
+    __table_args__ = (
+        Index('idx_validation_rfq_severity', 'rfq_id', 'severity'),
+        Index('idx_validation_resolved', 'is_resolved'),
+    )
+
+
+class ExtractionReview(Base):
+    """Human review record for an RFQ extraction."""
+    __tablename__ = "extraction_reviews"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=gen_uuid)
+    rfq_id: Mapped[str] = mapped_column(String(36), ForeignKey("rfq_records.id", ondelete="CASCADE"), index=True)
+    attachment_id: Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("rfq_attachments.id", ondelete="SET NULL"), nullable=True, index=True)
+    reviewed_by: Mapped[Optional[str]] = mapped_column(String(255))
+    review_status: Mapped[str] = mapped_column(String(50), default="pending", index=True)  # pending, in_review, approved, rejected
+    changes_made: Mapped[Optional[list]] = mapped_column(json_type())
+    notes: Mapped[Optional[str]] = mapped_column(Text)
+    reviewed_at: Mapped[Optional[datetime]] = mapped_column(DateTime)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+
+    rfq: Mapped["RFQRecord"] = relationship("RFQRecord", back_populates="extraction_reviews")
+
+    __table_args__ = (
+        Index('idx_review_rfq_status', 'rfq_id', 'review_status'),
+    )
+
+
+class TaskQueue(Base):
+    """Persistent async task queue backed by the database."""
+    __tablename__ = "task_queue"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=gen_uuid)
+    task_type: Mapped[str] = mapped_column(String(100), index=True)  # classify_attachment, extract_rfq, validate_rfq, sync_gmail
+    entity_type: Mapped[Optional[str]] = mapped_column(String(50))    # rfq, attachment, email, mailbox
+    entity_id: Mapped[Optional[str]] = mapped_column(String(36), index=True)
+    status: Mapped[str] = mapped_column(String(30), default="pending", index=True)  # pending, running, completed, failed, retrying
+    priority: Mapped[int] = mapped_column(Integer, default=5, index=True)  # 1=highest, 10=lowest
+    payload: Mapped[Optional[dict]] = mapped_column(json_type())
+    result: Mapped[Optional[dict]] = mapped_column(json_type())
+    error_message: Mapped[Optional[str]] = mapped_column(Text)
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    max_attempts: Mapped[int] = mapped_column(Integer, default=3)
+    scheduled_at: Mapped[Optional[datetime]] = mapped_column(DateTime)
+    started_at: Mapped[Optional[datetime]] = mapped_column(DateTime)
+    completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+
+    __table_args__ = (
+        Index('idx_task_status_priority', 'status', 'priority'),
+        Index('idx_task_entity', 'entity_type', 'entity_id'),
+        Index('idx_task_type_status', 'task_type', 'status'),
+    )
+
+
+class MaterialMaster(Base):
+    """Engineering material master database."""
+    __tablename__ = "material_master"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=gen_uuid)
+    code: Mapped[str] = mapped_column(String(100), unique=True, index=True)
+    name: Mapped[str] = mapped_column(String(500), index=True)
+    category: Mapped[str] = mapped_column(String(100), default="steel", index=True)  # steel, stainless, alloy, etc.
+    grade_standard: Mapped[Optional[str]] = mapped_column(String(100))   # ASTM, EN, IS, DIN
+    grade_code: Mapped[Optional[str]] = mapped_column(String(100), index=True)       # A106, 316L, P91, etc.
+    density_kg_m3: Mapped[Optional[float]] = mapped_column(Float)
+    unit_cost_per_kg: Mapped[Optional[float]] = mapped_column(Float)
+    aliases: Mapped[Optional[list]] = mapped_column(json_type())          # normalised alternate names
+    properties: Mapped[Optional[dict]] = mapped_column(json_type())       # UTS, yield, temp limits, etc.
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[Optional[datetime]] = mapped_column(DateTime, onupdate=datetime.utcnow)
+
+    __table_args__ = (
+        Index('idx_material_category_active', 'category', 'is_active'),
+        Index('idx_material_grade', 'grade_standard', 'grade_code'),
+    )

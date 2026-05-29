@@ -14,9 +14,15 @@ from app.database import engine, Base
 # Import all models so SQLAlchemy creates tables
 from app.models import job, uploaded_file, extracted_data, costing_sheet
 from app.models import quotation, cover_letter, rate_config, chat_history, audit_log
+from app.models import (
+    GmailCredential, RFQEmail, RFQAttachment, RFQRecord,
+    RFQLineItem, ValidationResult, ExtractionReview, TaskQueue, MaterialMaster,
+)
 
 from app.api.routes import estimate, cover_letter as cl_routes, chat, boq, drawing, history, settings as settings_routes
 from app.api.routes import drawing_costing as drawing_costing_routes
+from app.api.routes import rfq as rfq_routes
+from app.api.routes import gmail as gmail_routes
 
 
 @asynccontextmanager
@@ -29,6 +35,17 @@ async def lifespan(app: FastAPI):
     Path(settings.local_storage_path).mkdir(parents=True, exist_ok=True)
     (Path(settings.local_storage_path) / "uploads").mkdir(exist_ok=True)
     (Path(settings.local_storage_path) / "outputs").mkdir(exist_ok=True)
+    (Path(settings.local_storage_path) / "rfq_uploads").mkdir(exist_ok=True)
+
+    # Start background task queue worker
+    import asyncio
+    from app.tasks.rfq_tasks import run_worker
+    asyncio.create_task(
+        run_worker(
+            poll_interval=settings.task_worker_poll_interval,
+            max_concurrent=settings.task_worker_max_concurrent,
+        )
+    )
 
     yield
 
@@ -61,6 +78,8 @@ app.include_router(drawing.router,        prefix="/api/drawing",       tags=["Dr
 app.include_router(history.router,        prefix="/api/history",       tags=["History"])
 app.include_router(settings_routes.router,    prefix="/api/settings",         tags=["Settings"])
 app.include_router(drawing_costing_routes.router, prefix="/api/drawing-costing", tags=["Drawing Costing"])
+app.include_router(rfq_routes.router,             prefix="/api/rfq",            tags=["RFQ"])
+app.include_router(gmail_routes.router,           prefix="/api/gmail",          tags=["Gmail"])
 
 # Static files for local storage
 storage_path = Path(settings.local_storage_path)

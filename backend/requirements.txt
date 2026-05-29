@@ -39,3 +39,15 @@ httpx>=0.27.0
 
 # Utilities
 python-dateutil==2.9.0
+
+# Gmail integration (optional — install when Gmail is configured)
+google-auth>=2.35.0
+google-auth-oauthlib>=1.2.0
+google-api-python-client>=2.150.0
+
+# OCR (optional — requires Tesseract binary to be installed on OS)
+# pytesseract>=0.3.13
+# Pillow>=11.0.0
+
+# AI repair
+openai>=1.56.0

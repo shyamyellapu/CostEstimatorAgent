@@ -108,7 +108,7 @@ class OpenAIProvider(AIProvider):
                 {"role": "user", "content": prompt}
             ],
             temperature=0.1,
-            max_tokens=6000,
+            max_completion_tokens=6000,
             response_format={"type": "json_object"},
         )
 
@@ -160,7 +160,7 @@ class OpenAIProvider(AIProvider):
                 {"role": "user", "content": user_content}
             ],
             temperature=0.0,
-            max_tokens=8192,
+            max_completion_tokens=8192,
             response_format={"type": "json_object"},
         )
 
@@ -225,7 +225,7 @@ class OpenAIProvider(AIProvider):
                 {"role": "user", "content": prompt}
             ],
             temperature=0.1,
-            max_tokens=4096,
+            max_completion_tokens=4096,
             response_format={"type": "json_object"},
         )
 
@@ -243,7 +243,7 @@ class OpenAIProvider(AIProvider):
                     {"role": "user", "content": prompt}
                 ],
                 temperature=0.0,
-                max_tokens=512,
+                max_completion_tokens=512,
                 response_format={"type": "json_object"},
             )
             content = response.choices[0].message.content
@@ -266,7 +266,7 @@ class OpenAIProvider(AIProvider):
                     {"role": "user", "content": prompt}
                 ],
                 temperature=0.1,
-                max_tokens=4096,
+                max_completion_tokens=4096,
                 response_format={"type": "json_object"},
             )
             content = response.choices[0].message.content
@@ -294,7 +294,7 @@ class OpenAIProvider(AIProvider):
                     {"role": "user", "content": prompt}
                 ],
                 temperature=0.2,
-                max_tokens=6000,
+                max_completion_tokens=6000,
                 response_format={"type": "json_object"},
             )
             content = response.choices[0].message.content
@@ -316,8 +316,7 @@ class OpenAIProvider(AIProvider):
             response = await self.client.chat.completions.create(
                 model=self.model,
                 messages=[{"role": "system", "content": system_msg}] + messages,
-                temperature=0.3,
-                max_tokens=2048,
+                max_completion_tokens=2048,
             )
             return ChatResponse(
                 content=response.choices[0].message.content,
@@ -330,4 +329,13 @@ class OpenAIProvider(AIProvider):
             )
         except Exception as e:
             logger.error(f"OpenAI chat error: {e}")
-            return ChatResponse(content=f"Error: {str(e)}", model_used=self.model)
+            raise
+
+    async def complete(self, prompt: str, max_tokens: int = 4000, temperature: float = 0.1) -> str:
+        """Direct completion using raw OpenAI client with proper token param for newer models."""
+        response = await self.client.chat.completions.create(
+            model=self.model,
+            messages=[{"role": "user", "content": prompt}],
+            max_completion_tokens=max_tokens,
+        )
+        return response.choices[0].message.content or ""
