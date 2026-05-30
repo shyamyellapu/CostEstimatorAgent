@@ -87,7 +87,7 @@ The agent follows an industry-standard estimation pipeline:
 - **API**: Built with **FastAPI** for high-performance async processing.
 - **AI Integration**: Uses **Instructor** for structured data extraction and **Groq** for ultra-fast processing.
 - **Calculation Engines**: Modular Python services for each cost component (e.g., `welding_cost.py`, `surface_treatment.py`).
-- **Database**: **SQLAlchemy** with `aiosqlite` for local development. Handles 10+ relational tables for full auditability.
+- **Database**: **SQLAlchemy** with PostgreSQL/asyncpg for production-grade relational storage, indexing, and auditability.
 - **Reporting**: uses `openpyxl` for Excel and `ReportLab` for PDF.
 
 ### Frontend Architecture
@@ -103,7 +103,7 @@ The agent follows an industry-standard estimation pipeline:
 ### Prerequisites
 - **Python 3.10+**
 - **Node.js 18+**
-- **PostgreSQL 14+** (recommended for production) or SQLite (for development)
+- **PostgreSQL 14+**
 
 ### Quick Start (3 Options)
 
@@ -167,48 +167,17 @@ This script will:
     npm run dev
     ```
 
-#### Option 3: Development Setup with SQLite
-
-1.  **Backend Setup**:
-    ```bash
-    cd backend
-    pip install -r requirements.txt
-    
-    # Copy environment file
-    copy .env.example .env
-    
-    # Update .env to use SQLite:
-    # DATABASE_URL=sqlite+aiosqlite:///./cost_estimator.db
-    # Add your GROQ_API_KEY
-    
-    # Initialize database
-    python init_db.py init
-    
-    # Start server
-    python -m uvicorn app.main:app --reload
-    ```
-
-2.  **Frontend Setup**:
-    ```bash
-    cd frontend
-    npm install
-    npm run dev
-    ```
-
 ### Database Management Commands
 
 ```powershell
-# Initialize database (create tables + seed data)
-python init_db.py init
+# Apply database migrations
+alembic upgrade head
 
-# Reset database (drop + create + seed)
-python init_db.py reset
+# Seed rate configurations
+python init_db.py seed
 
 # Test database connection
 python init_db.py test
-
-# Run database migrations (Alembic)
-alembic upgrade head
 
 # Generate new migration
 alembic revision --autogenerate -m "description"
@@ -217,7 +186,7 @@ alembic revision --autogenerate -m "description"
 ### Configuration
 
 Edit `backend/.env` to configure:
-- **Database**: PostgreSQL or SQLite connection
+- **Database**: PostgreSQL connection
 - **AI Provider**: Groq or Anthropic API keys
 - **Storage**: Local, Azure, or AWS S3
 - **Company Branding**: Name, address, signatory details

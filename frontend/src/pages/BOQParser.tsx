@@ -8,6 +8,7 @@ export default function BOQParser() {
   const [file, setFile] = useState<File | null>(null)
   const [context, setContext] = useState('')
   const [loading, setLoading] = useState(false)
+  const [exporting, setExporting] = useState(false)
   const [result, setResult] = useState<any>(null)
 
   const { getRootProps, getInputProps, isDragActive } = useDropzone({
@@ -36,19 +37,33 @@ export default function BOQParser() {
     finally { setLoading(false) }
   }
 
-  const exportCSV = () => {
+  const exportCSV = async () => {
     if (!result?.dimensions?.length) return
-    const headers = ['Item Tag', 'Description', 'Section Type', 'Qty', 'Length (mm)', 'Width (mm)', 'Thickness (mm)', 'OD (mm)', 'Material', 'Confidence']
-    const rows = result.dimensions.map((d: any) => [
-      d.item_tag || '', d.description || '', d.section_type || '',
-      d.quantity || '', d.length_mm || '', d.width_mm || '', d.thickness_mm || '',
-      d.od_mm || '', d.material_grade || '', d.confidence || ''
-    ])
-    const csv = [headers, ...rows].map(r => r.join(',')).join('\n')
-    const blob = new Blob([csv], { type: 'text/csv' })
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement('a'); a.href = url; a.download = 'boq_parsed.csv'; a.click()
-    URL.revokeObjectURL(url)
+    setExporting(true)
+    try {
+      const res = await api.post(
+        '/boq/export-csv',
+        {
+          dimensions: result.dimensions,
+          summary: result.summary,
+          original_filename: file?.name,
+          job_id: result.job_id,
+        },
+        { responseType: 'blob' }
+      )
+      const blob = new Blob([res.data], { type: 'text/csv' })
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `${(file?.name || 'boq').replace(/\.[^/.]+$/, '')}_parsed.csv`
+      a.click()
+      URL.revokeObjectURL(url)
+      toast.success('CSV exported and saved to database')
+    } catch (e: any) {
+      toast.error(e.message)
+    } finally {
+      setExporting(false)
+    }
   }
 
   return (
@@ -114,8 +129,8 @@ export default function BOQParser() {
           ) : (
             <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
               <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
-                <button className="btn btn-secondary btn-sm" onClick={exportCSV}>
-                  <Download size={14} /> Export CSV
+                <button className="btn btn-secondary btn-sm" onClick={exportCSV} disabled={exporting}>
+                  <Download size={14} /> {exporting ? 'Exporting…' : 'Export CSV'}
                 </button>
               </div>
               <div className="card">

@@ -105,16 +105,24 @@ async def upload_files(
         storage = await storage_service.save_upload(content, file.filename, str(job.id))
         uf = UploadedFile(
             job_id=job.id,
+            company_id=job.company_id,
             original_filename=file.filename,
             stored_filename=storage["stored_filename"],
             file_type=ftype,
+            file_origin="upload",
             mime_type=file.content_type,
             file_size=storage["file_size"],
             storage_path=storage["storage_path"],
             storage_url=storage["storage_url"],
+            storage_provider=storage.get("storage_provider"),
+            blob_reference=storage.get("blob_reference"),
+            checksum_sha256=storage.get("checksum_sha256"),
             is_processed="pending",
+            processing_status="pending",
+            metadata_json={"source": "upload"},
         )
         db.add(uf)
+        await db.flush()
         uploaded.append({
             "file_id": str(uf.id),
             "filename": file.filename,
@@ -498,6 +506,26 @@ async def generate_excel(
     storage = await storage_service.save_output(excel_bytes, filename, str(job.id))
     cs.excel_path = storage["storage_path"]
     cs.excel_url = storage["storage_url"]
+
+    output_file = UploadedFile(
+        job_id=job.id,
+        company_id=job.company_id,
+        original_filename=filename,
+        stored_filename=storage["stored_filename"],
+        file_type="excel",
+        file_origin="generated",
+        mime_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        file_size=storage["file_size"],
+        storage_path=storage["storage_path"],
+        storage_url=storage["storage_url"],
+        storage_provider=storage.get("storage_provider"),
+        blob_reference=storage.get("blob_reference"),
+        checksum_sha256=storage.get("checksum_sha256"),
+        is_processed="done",
+        processing_status="completed",
+        metadata_json={"source": "costing_sheet"},
+    )
+    db.add(output_file)
     await db.commit()
 
     return StreamingResponse(

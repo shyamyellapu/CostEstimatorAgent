@@ -15,7 +15,7 @@ from pydantic import BaseModel
 
 class ExtractionFlag(BaseModel):
     field: str = "general"
-    reason: str
+    reason: str = "No reason provided"
     confidence: float = 0.5
 
 

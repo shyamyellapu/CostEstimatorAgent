@@ -55,10 +55,6 @@ Thumbs.db
 logs/
 
 # Database
-*.db
-*.sqlite
-*.sqlite3
-backend/cost_estimator.db
 
 # Node.js (for frontend)
 node_modules/

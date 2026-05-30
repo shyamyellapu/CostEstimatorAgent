@@ -85,10 +85,6 @@ async def verify_rates():
 async def main():
     """Main execution."""
     try:
-        # Create tables if they don't exist
-        async with engine.begin() as conn:
-            await conn.run_sync(Base.metadata.create_all)
-        
         # Seed rates
         await seed_master_rates()
         

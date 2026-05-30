@@ -115,6 +115,7 @@ export default function DrawingCosting() {
   const [project, setProject] = useState<ProjectInfo | null>(null)
   const [notes, setNotes] = useState<string>('')
   const [rawExtraction, setRawExtraction] = useState<object | null>(null)
+  const [drawingJobId, setDrawingJobId] = useState<string | null>(null)
 
   // costing (mutable via markup slider)
   const [costing, setCosting] = useState<Costing | null>(null)
@@ -150,6 +151,7 @@ export default function DrawingCosting() {
       setProject(proj)
       setNotes(data.extraction?.notes || '')
       setRawExtraction(data.extraction)
+      setDrawingJobId(data.job_id || null)
 
       if (data.warning) setWarning(data.warning)
 
@@ -192,7 +194,7 @@ export default function DrawingCosting() {
     try {
       const resp = await api.post(
         '/drawing-costing/generate-excel',
-        { extraction: rawExtraction, customer, markup_pct: markupPct },
+        { extraction: rawExtraction, customer, markup_pct: markupPct, job_id: drawingJobId },
         { responseType: 'blob', timeout: 60_000 },
       )
       const url   = URL.createObjectURL(new Blob([resp.data as BlobPart]))
@@ -217,6 +219,7 @@ export default function DrawingCosting() {
     setProject(null)
     setCosting(null)
     setRawExtraction(null)
+    setDrawingJobId(null)
     setNotes('')
     setWarning(null)
     setError(null)

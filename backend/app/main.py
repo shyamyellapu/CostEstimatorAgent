@@ -7,9 +7,10 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pathlib import Path
+from sqlalchemy import text
 
 from app.config import settings
-from app.database import engine, Base
+from app.database import engine, Base, check_database_connection
 
 # Import all models so SQLAlchemy creates tables
 from app.models import job, uploaded_file, extracted_data, costing_sheet
@@ -21,9 +22,9 @@ from app.api.routes import drawing_costing as drawing_costing_routes
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Create all DB tables on startup."""
-    # async with engine.begin() as conn:
-    #     await conn.run_sync(lambda conn: Base.metadata.create_all(conn, checkfirst=True))
+    """Validate database connectivity and prepare runtime storage."""
+    async with engine.connect() as conn:
+        await conn.execute(text("SELECT 1"))
 
     # Ensure local storage directories exist
     Path(settings.local_storage_path).mkdir(parents=True, exist_ok=True)
@@ -71,6 +72,11 @@ if storage_path.exists():
 @app.get("/health")
 async def health():
     return {"status": "ok", "version": "1.0.0"}
+
+
+@app.get("/health/db")
+async def health_db():
+    return await check_database_connection()
 
 
 @app.get("/api/ai/info")

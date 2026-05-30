@@ -5,8 +5,7 @@ from typing import List
 
 class Settings(BaseSettings):
     # Database
-    database_url: str = "sqlite+aiosqlite:///./cost_estimator.db"
-    # PostgreSQL URL format: postgresql+asyncpg://user:password@host:port/dbname
+    database_url: str = "postgresql+asyncpg://postgres:password@localhost:5432/cost_estimator"
     
     # Database Pool Settings (for PostgreSQL)
     db_pool_size: int = 20
@@ -70,6 +69,13 @@ class Settings(BaseSettings):
         env_file = ".env"
         env_file_encoding = "utf-8"
         extra = "ignore"
+
+    def __init__(self, **values):
+        super().__init__(**values)
+        if not self.database_url.startswith("postgresql+asyncpg://"):
+            raise ValueError(
+                "DATABASE_URL must use postgresql+asyncpg:// for production PostgreSQL support"
+            )
 
 
 settings = Settings()

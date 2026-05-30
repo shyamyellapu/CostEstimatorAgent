@@ -4,6 +4,7 @@ Swap backend by setting STORAGE_BACKEND in .env
 """
 import os
 import uuid
+import hashlib
 import aiofiles
 import logging
 from pathlib import Path
@@ -20,29 +21,34 @@ class FileStorageService:
         self.backend = settings.storage_backend.lower()
         self.local_base = Path(settings.local_storage_path)
 
+    def _checksum(self, file_bytes: bytes) -> str:
+        return hashlib.sha256(file_bytes).hexdigest()
+
     async def save_upload(self, file_bytes: bytes, original_filename: str, job_id: str) -> dict:
         """Save an uploaded file and return storage metadata."""
         ext = Path(original_filename).suffix.lower()
         stored_name = f"{job_id}/{uuid.uuid4().hex}{ext}"
+        checksum = self._checksum(file_bytes)
 
         if self.backend == "local":
-            return await self._save_local(file_bytes, stored_name, original_filename)
+            return await self._save_local(file_bytes, stored_name, original_filename, checksum)
         elif self.backend == "azure":
-            return await self._save_azure(file_bytes, stored_name, original_filename)
+            return await self._save_azure(file_bytes, stored_name, original_filename, checksum)
         elif self.backend in ("s3", "aws"):
-            return await self._save_s3(file_bytes, stored_name, original_filename)
+            return await self._save_s3(file_bytes, stored_name, original_filename, checksum)
         else:
             raise ValueError(f"Unknown storage backend: {self.backend}")
 
     async def save_output(self, file_bytes: bytes, filename: str, job_id: str) -> dict:
         """Save a generated output file (Excel, PDF)."""
         stored_name = f"outputs/{job_id}/{filename}"
+        checksum = self._checksum(file_bytes)
         if self.backend == "local":
-            return await self._save_local(file_bytes, stored_name, filename, subfolder="outputs")
+            return await self._save_local(file_bytes, stored_name, filename, checksum, subfolder="outputs")
         elif self.backend == "azure":
-            return await self._save_azure(file_bytes, stored_name, filename)
+            return await self._save_azure(file_bytes, stored_name, filename, checksum)
         elif self.backend in ("s3", "aws"):
-            return await self._save_s3(file_bytes, stored_name, filename)
+            return await self._save_s3(file_bytes, stored_name, filename, checksum)
         else:
             raise ValueError(f"Unknown storage backend: {self.backend}")
 
@@ -55,7 +61,7 @@ class FileStorageService:
         else:
             raise NotImplementedError(f"get_file not implemented for {self.backend}")
 
-    async def _save_local(self, file_bytes: bytes, stored_name: str, original_filename: str, subfolder: str = "uploads") -> dict:
+    async def _save_local(self, file_bytes: bytes, stored_name: str, original_filename: str, checksum: str, subfolder: str = "uploads") -> dict:
         target_path = self.local_base / subfolder / stored_name
         target_path.parent.mkdir(parents=True, exist_ok=True)
         async with aiofiles.open(target_path, "wb") as f:
@@ -68,9 +74,12 @@ class FileStorageService:
             "storage_url": url,
             "stored_filename": stored_name,
             "file_size": len(file_bytes),
+            "checksum_sha256": checksum,
+            "storage_provider": self.backend,
+            "blob_reference": relative_path,
         }
 
-    async def _save_azure(self, file_bytes: bytes, blob_name: str, original_filename: str) -> dict:
+    async def _save_azure(self, file_bytes: bytes, blob_name: str, original_filename: str, checksum: str) -> dict:
         """Azure Blob Storage upload."""
         from azure.storage.blob.aio import BlobServiceClient
         async with BlobServiceClient.from_connection_string(
@@ -85,9 +94,12 @@ class FileStorageService:
             "storage_url": url,
             "stored_filename": blob_name,
             "file_size": len(file_bytes),
+            "checksum_sha256": checksum,
+            "storage_provider": self.backend,
+            "blob_reference": blob_name,
         }
 
-    async def _save_s3(self, file_bytes: bytes, key: str, original_filename: str) -> dict:
+    async def _save_s3(self, file_bytes: bytes, key: str, original_filename: str, checksum: str) -> dict:
         """AWS S3 upload."""
         import aioboto3
         session = aioboto3.Session(
@@ -103,6 +115,9 @@ class FileStorageService:
             "storage_url": url,
             "stored_filename": key,
             "file_size": len(file_bytes),
+            "checksum_sha256": checksum,
+            "storage_provider": self.backend,
+            "blob_reference": key,
         }
 
 

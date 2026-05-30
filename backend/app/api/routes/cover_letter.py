@@ -5,9 +5,14 @@ import re
 from datetime import datetime
 from fastapi import APIRouter, File, HTTPException, UploadFile
 from fastapi.responses import StreamingResponse
+from sqlalchemy.ext.asyncio import AsyncSession
+from fastapi import Depends
 
 from app.services.cover_letter_service import cover_letter_service
 from app.config import settings
+from app.api.deps import db_session
+from app.models import UploadedFile
+from app.services.file_storage import storage_service
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -15,7 +20,8 @@ logger = logging.getLogger(__name__)
 
 @router.post("/generate")
 async def generate_cover_letter(
-    quotation_file: UploadFile = File(...)
+    quotation_file: UploadFile = File(...),
+    db: AsyncSession = Depends(db_session),
 ):
     """
     Generate a cover letter PDF.
@@ -61,6 +67,30 @@ async def generate_cover_letter(
     ref = quotation_data.get("reference_number") or quotation_data.get("project") or "cover_letter"
     safe_ref = re.sub(r"[^A-Za-z0-9._-]+", "_", str(ref)).strip("_") or "cover_letter"
     pdf_filename = f"{safe_ref}_{datetime.utcnow().strftime('%Y%m%d')}_cover_letter.pdf"
+    storage = await storage_service.save_output(pdf_bytes, pdf_filename, safe_ref)
+
+    try:
+        output_file = UploadedFile(
+            job_id=None,
+            original_filename=pdf_filename,
+            stored_filename=storage["stored_filename"],
+            file_type="pdf",
+            file_origin="generated",
+            mime_type="application/pdf",
+            file_size=storage["file_size"],
+            storage_path=storage["storage_path"],
+            storage_url=storage["storage_url"],
+            storage_provider=storage.get("storage_provider"),
+            blob_reference=storage.get("blob_reference"),
+            checksum_sha256=storage.get("checksum_sha256"),
+            is_processed="done",
+            processing_status="completed",
+            metadata_json={"source": "cover_letter"},
+        )
+        db.add(output_file)
+        await db.commit()
+    except Exception as e:
+        logger.warning(f"Failed to persist cover letter metadata: {e}")
 
     return StreamingResponse(
         io.BytesIO(pdf_bytes),

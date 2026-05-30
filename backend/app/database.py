@@ -1,7 +1,7 @@
-"""Database engine and session factory."""
+"""Database engine and session factory for PostgreSQL."""
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 from sqlalchemy.orm import DeclarativeBase
-from sqlalchemy.pool import NullPool, AsyncAdaptedQueuePool
 
 from app.config import settings
 
@@ -10,26 +10,18 @@ class Base(DeclarativeBase):
     pass
 
 
-# Database engine configuration
+if not settings.database_url.startswith("postgresql+asyncpg://"):
+    raise ValueError("DATABASE_URL must be PostgreSQL asyncpg URL")
+
+# PostgreSQL engine configuration
 engine_config = {
     "echo": settings.debug,
+    "pool_size": settings.db_pool_size,
+    "max_overflow": settings.db_max_overflow,
+    "pool_timeout": settings.db_pool_timeout,
+    "pool_recycle": settings.db_pool_recycle,
+    "pool_pre_ping": True,
 }
-
-# Optimize connection pooling for PostgreSQL
-if "postgresql" in settings.database_url:
-    engine_config.update({
-        "pool_size": settings.db_pool_size,  # Max connections in pool
-        "max_overflow": settings.db_max_overflow,  # Additional connections beyond pool_size
-        "pool_timeout": settings.db_pool_timeout,  # Timeout for getting connection from pool
-        "pool_recycle": settings.db_pool_recycle,  # Recycle connections after 1 hour
-        "pool_pre_ping": True,  # Verify connections before using
-        "poolclass": AsyncAdaptedQueuePool,
-    })
-elif "sqlite" in settings.database_url:
-    # SQLite-specific settings
-    engine_config.update({
-        "connect_args": {"check_same_thread": False},
-    })
 
 engine = create_async_engine(
     settings.database_url,
@@ -55,3 +47,17 @@ async def get_db():
             raise
         finally:
             await session.close()
+
+
+async def check_database_connection() -> dict:
+    """Verify PostgreSQL connectivity and return connection metadata."""
+    async with engine.connect() as connection:
+        result = await connection.execute(text("SELECT 1"))
+        result.scalar_one()
+
+    return {
+        "database": "connected",
+        "status": "healthy",
+        "driver": "asyncpg",
+        "pool_status": engine.pool.status() if hasattr(engine.pool, "status") else "unavailable",
+    }

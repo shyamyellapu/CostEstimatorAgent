@@ -1,5 +1,6 @@
 """Database initialization and management utilities."""
 import asyncio
+import subprocess
 import sys
 from pathlib import Path
 
@@ -14,11 +15,14 @@ from app.models import RateConfiguration
 
 
 async def create_database():
-    """Create database tables."""
-    print("Creating database tables...")
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-    print("✓ Database tables created successfully")
+    """Apply Alembic migrations to create the database schema."""
+    print("Applying Alembic migrations...")
+    subprocess.run(
+        [sys.executable, "-m", "alembic", "upgrade", "head"],
+        check=True,
+        cwd=str(Path(__file__).parent),
+    )
+    print("✓ Database migrations applied successfully")
 
 
 async def drop_database():

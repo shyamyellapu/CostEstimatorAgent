@@ -2,9 +2,12 @@
 import uuid
 from datetime import datetime
 from typing import Optional, List
-from sqlalchemy import String, Float, Boolean, DateTime, JSON, Text, Integer, Enum as SAEnum, ForeignKey, Index
+from sqlalchemy import (
+    String, Float, Boolean, DateTime, Text, Integer, Enum as SAEnum,
+    ForeignKey, Index, Table, Column, UniqueConstraint, JSON
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
-from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.dialects.postgresql import JSONB, UUID as PGUUID
 import enum
 
 from app.database import Base
@@ -15,8 +18,12 @@ def gen_uuid():
 
 
 def json_type():
-    """Return JSONB for PostgreSQL, JSON for others (SQLite)."""
-    return JSONB().with_variant(JSON(), 'sqlite')
+    """Return PostgreSQL JSONB for structured application data."""
+    return JSONB()
+
+
+def gen_uuid_obj():
+    return uuid.uuid4()
 
 
 # ─── Enums ────────────────────────────────────────────────────────────────────
@@ -45,6 +52,7 @@ class Job(Base):
     __tablename__ = "jobs"
     
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=gen_uuid)
+    company_id: Mapped[Optional[uuid.UUID]] = mapped_column(PGUUID(as_uuid=True), ForeignKey("companies.id", ondelete="SET NULL"), nullable=True, index=True)
     job_number: Mapped[str] = mapped_column(String(64), unique=True, index=True)
     client_name: Mapped[Optional[str]] = mapped_column(String(255), index=True)
     project_name: Mapped[Optional[str]] = mapped_column(String(500))
@@ -65,6 +73,7 @@ class Job(Base):
     cover_letters: Mapped[List["CoverLetter"]] = relationship("CoverLetter", back_populates="job", cascade="all, delete-orphan", lazy="selectin")
     audit_logs: Mapped[List["AuditLog"]] = relationship("AuditLog", back_populates="job", cascade="all, delete-orphan", lazy="select")
     chat_history: Mapped[List["ChatHistory"]] = relationship("ChatHistory", back_populates="job", cascade="all, delete-orphan", lazy="select")
+    company: Mapped[Optional["Company"]] = relationship("Company", back_populates="jobs")
 
     __table_args__ = (
         Index('idx_job_status_created', 'status', 'created_at'),
@@ -76,15 +85,25 @@ class UploadedFile(Base):
     __tablename__ = "uploaded_files"
     
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=gen_uuid)
-    job_id: Mapped[str] = mapped_column(String(36), ForeignKey("jobs.id", ondelete="CASCADE"), index=True)
+    job_id: Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("jobs.id", ondelete="CASCADE"), nullable=True, index=True)
+    uploaded_by_user_id: Mapped[Optional[uuid.UUID]] = mapped_column(PGUUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
+    company_id: Mapped[Optional[uuid.UUID]] = mapped_column(PGUUID(as_uuid=True), ForeignKey("companies.id", ondelete="SET NULL"), nullable=True, index=True)
     original_filename: Mapped[str] = mapped_column(String(500))
     stored_filename: Mapped[str] = mapped_column(String(500))
     file_type: Mapped[str] = mapped_column(String(50), default="other", index=True)
+    file_origin: Mapped[str] = mapped_column(String(20), default="upload", index=True)
     mime_type: Mapped[Optional[str]] = mapped_column(String(200))
     file_size: Mapped[Optional[int]] = mapped_column(Integer)
     storage_path: Mapped[str] = mapped_column(String(1000))
     storage_url: Mapped[Optional[str]] = mapped_column(String(1000))
+    storage_provider: Mapped[Optional[str]] = mapped_column(String(50))
+    blob_reference: Mapped[Optional[str]] = mapped_column(String(1000))
+    checksum_sha256: Mapped[Optional[str]] = mapped_column(String(64), index=True)
     is_processed: Mapped[str] = mapped_column(String(20), default="pending", index=True)
+    processing_status: Mapped[str] = mapped_column(String(30), default="pending", index=True)
+    metadata_json: Mapped[Optional[dict]] = mapped_column(json_type())
+    processed_at: Mapped[Optional[datetime]] = mapped_column(DateTime)
+    deleted_at: Mapped[Optional[datetime]] = mapped_column(DateTime)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
     
     job: Mapped["Job"] = relationship("Job", back_populates="files")
@@ -238,3 +257,151 @@ class AuditLog(Base):
         Index('idx_audit_actor_created', 'actor', 'created_at'),
         Index('idx_audit_job_created', 'job_id', 'created_at'),
     )
+
+
+class Company(Base):
+    __tablename__ = "companies"
+
+    id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=gen_uuid_obj)
+    name: Mapped[str] = mapped_column(String(255), unique=True, index=True)
+    legal_name: Mapped[Optional[str]] = mapped_column(String(255))
+    tax_number: Mapped[Optional[str]] = mapped_column(String(100), index=True)
+    email: Mapped[Optional[str]] = mapped_column(String(255), index=True)
+    phone: Mapped[Optional[str]] = mapped_column(String(100))
+    website: Mapped[Optional[str]] = mapped_column(String(255))
+    address_json: Mapped[Optional[dict]] = mapped_column(json_type())
+    settings_json: Mapped[Optional[dict]] = mapped_column(json_type())
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    updated_at: Mapped[Optional[datetime]] = mapped_column(DateTime, onupdate=datetime.utcnow)
+
+    jobs: Mapped[List["Job"]] = relationship("Job", back_populates="company")
+
+
+class Role(Base):
+    __tablename__ = "roles"
+
+    id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=gen_uuid_obj)
+    name: Mapped[str] = mapped_column(String(100), unique=True, index=True)
+    description: Mapped[Optional[str]] = mapped_column(Text)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[Optional[datetime]] = mapped_column(DateTime, onupdate=datetime.utcnow)
+
+
+class Permission(Base):
+    __tablename__ = "permissions"
+
+    id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=gen_uuid_obj)
+    name: Mapped[str] = mapped_column(String(120), unique=True, index=True)
+    description: Mapped[Optional[str]] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+role_permissions = Table(
+    "role_permissions",
+    Base.metadata,
+    Column("role_id", PGUUID(as_uuid=True), ForeignKey("roles.id", ondelete="CASCADE"), primary_key=True),
+    Column("permission_id", PGUUID(as_uuid=True), ForeignKey("permissions.id", ondelete="CASCADE"), primary_key=True),
+)
+
+
+user_roles = Table(
+    "user_roles",
+    Base.metadata,
+    Column("user_id", PGUUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), primary_key=True),
+    Column("role_id", PGUUID(as_uuid=True), ForeignKey("roles.id", ondelete="CASCADE"), primary_key=True),
+)
+
+
+class AppUser(Base):
+    __tablename__ = "users"
+
+    id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=gen_uuid_obj)
+    company_id: Mapped[Optional[uuid.UUID]] = mapped_column(PGUUID(as_uuid=True), ForeignKey("companies.id", ondelete="SET NULL"), nullable=True, index=True)
+    email: Mapped[str] = mapped_column(String(255), unique=True, index=True)
+    full_name: Mapped[str] = mapped_column(String(255), index=True)
+    password_hash: Mapped[str] = mapped_column(String(255))
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    is_superuser: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    last_login_at: Mapped[Optional[datetime]] = mapped_column(DateTime)
+    profile_settings_json: Mapped[Optional[dict]] = mapped_column(json_type())
+    preferences_json: Mapped[Optional[dict]] = mapped_column(json_type())
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    updated_at: Mapped[Optional[datetime]] = mapped_column(DateTime, onupdate=datetime.utcnow)
+
+    roles: Mapped[List["Role"]] = relationship("Role", secondary=user_roles, lazy="selectin")
+
+
+class RefreshToken(Base):
+    __tablename__ = "refresh_tokens"
+
+    id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=gen_uuid_obj)
+    user_id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    token_hash: Mapped[str] = mapped_column(String(255), unique=True, index=True)
+    jti: Mapped[str] = mapped_column(String(120), unique=True, index=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime, index=True)
+    revoked_at: Mapped[Optional[datetime]] = mapped_column(DateTime)
+    device_info_json: Mapped[Optional[dict]] = mapped_column(json_type())
+    ip_address: Mapped[Optional[str]] = mapped_column(String(100))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+
+
+class LoginHistory(Base):
+    __tablename__ = "login_history"
+
+    id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=gen_uuid_obj)
+    user_id: Mapped[Optional[uuid.UUID]] = mapped_column(PGUUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
+    email: Mapped[Optional[str]] = mapped_column(String(255), index=True)
+    success: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    ip_address: Mapped[Optional[str]] = mapped_column(String(100))
+    user_agent: Mapped[Optional[str]] = mapped_column(String(1000))
+    metadata_json: Mapped[Optional[dict]] = mapped_column(json_type())
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+
+
+class SystemSetting(Base):
+    __tablename__ = "system_settings"
+
+    id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=gen_uuid_obj)
+    key: Mapped[str] = mapped_column(String(200), unique=True, index=True)
+    value_json: Mapped[Optional[dict]] = mapped_column(json_type())
+    value_text: Mapped[Optional[str]] = mapped_column(Text)
+    category: Mapped[str] = mapped_column(String(100), default="general", index=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[Optional[datetime]] = mapped_column(DateTime, onupdate=datetime.utcnow)
+
+
+class UserSetting(Base):
+    __tablename__ = "user_settings"
+
+    id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=gen_uuid_obj)
+    user_id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    key: Mapped[str] = mapped_column(String(200), index=True)
+    value_json: Mapped[Optional[dict]] = mapped_column(json_type())
+    value_text: Mapped[Optional[str]] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[Optional[datetime]] = mapped_column(DateTime, onupdate=datetime.utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("user_id", "key", name="uq_user_settings_user_key"),
+    )
+
+
+class AiProcessingLog(Base):
+    __tablename__ = "ai_processing_logs"
+
+    id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=gen_uuid_obj)
+    job_id: Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("jobs.id", ondelete="CASCADE"), nullable=True, index=True)
+    file_id: Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("uploaded_files.id", ondelete="SET NULL"), nullable=True, index=True)
+    provider: Mapped[str] = mapped_column(String(50), index=True)
+    model: Mapped[Optional[str]] = mapped_column(String(100), index=True)
+    operation: Mapped[str] = mapped_column(String(100), index=True)
+    prompt_json: Mapped[Optional[dict]] = mapped_column(json_type())
+    response_json: Mapped[Optional[dict]] = mapped_column(json_type())
+    confidence: Mapped[Optional[float]] = mapped_column(Float)
+    status: Mapped[str] = mapped_column(String(30), default="success", index=True)
+    error_message: Mapped[Optional[str]] = mapped_column(Text)
+    tokens_json: Mapped[Optional[dict]] = mapped_column(json_type())
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
