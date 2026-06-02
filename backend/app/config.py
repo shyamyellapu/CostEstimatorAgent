@@ -1,6 +1,9 @@
 """Application settings from environment variables."""
+from pathlib import Path
 from pydantic_settings import BaseSettings
 from typing import List
+
+_ENV_FILE = str(Path(__file__).parent.parent / ".env")
 
 
 class Settings(BaseSettings):
@@ -58,6 +61,18 @@ class Settings(BaseSettings):
     cover_letter_master_template_path: str = "ReferenceFiles/MASTER FABRICATION Template.docx"
     cover_letter_header_footer_docx_path: str = "ReferenceFiles/Header and Footer.docx"
 
+    # Gmail OAuth2
+    gmail_client_id: str = ""
+    gmail_client_secret: str = ""
+    gmail_redirect_uri: str = "http://localhost:5173/gmail/callback"
+
+    # RFQ settings
+    rfq_confidence_threshold: float = 0.75
+    rfq_auto_extract: bool = True
+    rfq_auto_validate: bool = True
+    task_worker_poll_interval: float = 3.0
+    task_worker_max_concurrent: int = 3
+
     # CORS
     allowed_origins: List[str] = ["http://localhost:5173", "http://localhost:3000"]
 
@@ -66,7 +81,7 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
 
     class Config:
-        env_file = ".env"
+        env_file = _ENV_FILE
         env_file_encoding = "utf-8"
         extra = "ignore"
 

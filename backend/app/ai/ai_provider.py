@@ -255,3 +255,27 @@ class AIProvider(ABC):
     ) -> ChatResponse:
         """Handle conversational chat with job context."""
         pass
+
+    async def complete(
+        self,
+        prompt: str,
+        max_tokens: int = 4000,
+        temperature: float = 0.1,
+    ) -> str:
+        """
+        Simple prompt → text completion.
+        Wraps chat() so callers don't need to build a messages list.
+        Returns the plain text string from the response.
+        """
+        response = await self.chat([{"role": "user", "content": prompt}])
+        return response.content
+
+
+# ---------------------------------------------------------------------------
+# Convenience factory — import via:  from app.ai.ai_provider import get_provider
+# ---------------------------------------------------------------------------
+
+def get_provider() -> "AIProvider":
+    """Return the configured AI provider (same as app.ai.get_ai_provider)."""
+    from app.ai import get_ai_provider  # local import avoids circular dependency
+    return get_ai_provider()

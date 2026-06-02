@@ -4,7 +4,6 @@ import { Menu, Bell, Search } from 'lucide-react'
 const routeLabels: Record<string, string> = {
   '/dashboard':        'Dashboard',
   '/estimate/new':     'New Estimate',
-  '/drawing-reader':   'Drawing Reader',
   '/weight-calculator':'Weight Calculator',
   '/boq-parser':       'BOQ Parser',
   '/excel-generator':  'Excel Generator',

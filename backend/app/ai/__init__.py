@@ -82,6 +82,9 @@ class FallbackProvider(AIProvider):
     async def chat(self, messages, context=None):
         return await self._call_with_fallback("chat", messages, context)
 
+    async def complete(self, prompt, max_tokens=4000, temperature=0.1):
+        return await self._call_with_fallback("complete", prompt, max_tokens=max_tokens, temperature=temperature)
+
 
 def _has_openai_key() -> bool:
     return bool((settings.openai_api_key or "").strip())

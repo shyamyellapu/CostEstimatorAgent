@@ -311,4 +311,14 @@ class GroqProvider(AIProvider):
             )
         except Exception as e:
             logger.error(f"Groq chat error: {e}")
-            return ChatResponse(content=f"Error: {str(e)}", model_used=self.model_large)
+            raise
+
+    async def complete(self, prompt: str, max_tokens: int = 4000, temperature: float = 0.1) -> str:
+        """Direct completion using raw Groq client."""
+        raw = await self.raw_client.chat.completions.create(
+            model=self.model_large,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=temperature,
+            max_tokens=max_tokens,
+        )
+        return raw.choices[0].message.content or ""

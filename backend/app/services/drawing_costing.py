@@ -135,16 +135,32 @@ def get_kg_per_m(section: str) -> tuple[float, bool]:
 # ---------------------------------------------------------------------------
 # Step 1: Call AI vision API (OpenAI primary / Claude fallback)
 # ---------------------------------------------------------------------------
-async def _extract_via_openai(pdf_bytes: bytes) -> dict:
+def _build_prompt(context_text: str) -> str:
+    """
+    Build the final extraction prompt, injecting the email body as context
+    so the AI can correctly identify the client, project reference, and scope.
+    """
+    if not context_text or not context_text.strip():
+        return EXTRACTION_PROMPT
+    header = (
+        "=== EMAIL / RFQ CONTEXT (use to populate project.client, project.title, etc.) ===\n"
+        + context_text.strip()[:3000]   # cap to avoid token overflow
+        + "\n=== END OF EMAIL CONTEXT ===\n\n"
+    )
+    return header + EXTRACTION_PROMPT
+
+
+async def _extract_via_openai(pdf_bytes: bytes, context_text: str = "") -> dict:
     """Convert PDF pages to images and send to OpenAI vision."""
     import fitz  # PyMuPDF
     from openai import AsyncOpenAI
 
     client = AsyncOpenAI(api_key=settings.openai_api_key)
+    prompt = _build_prompt(context_text)
 
     # Render each PDF page to a PNG image
     doc = fitz.open(stream=pdf_bytes, filetype="pdf")
-    user_content: list = [{"type": "text", "text": EXTRACTION_PROMPT}]
+    user_content: list = [{"type": "text", "text": prompt}]
     for page in doc:
         pix = page.get_pixmap(dpi=150)
         img_bytes = pix.tobytes("png")
@@ -169,12 +185,13 @@ async def _extract_via_openai(pdf_bytes: bytes) -> dict:
     return _parse_extraction_response(raw)
 
 
-async def _extract_via_claude(pdf_bytes: bytes) -> dict:
+async def _extract_via_claude(pdf_bytes: bytes, context_text: str = "") -> dict:
     """Send PDF natively to Claude vision API."""
     import anthropic
 
     client = anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key)
     pdf_b64 = base64.standard_b64encode(pdf_bytes).decode("utf-8")
+    prompt = _build_prompt(context_text)
 
     message = await client.messages.create(
         model=settings.claude_model_drawing,
@@ -190,7 +207,7 @@ async def _extract_via_claude(pdf_bytes: bytes) -> dict:
                         "data": pdf_b64,
                     },
                 },
-                {"type": "text", "text": EXTRACTION_PROMPT},
+                {"type": "text", "text": prompt},
             ],
         }],
     )
@@ -198,27 +215,31 @@ async def _extract_via_claude(pdf_bytes: bytes) -> dict:
     return _parse_extraction_response(raw)
 
 
-async def extract_from_pdf(pdf_bytes: bytes) -> dict:
-    """Route PDF extraction to the configured AI provider (with automatic fallback)."""
+async def extract_from_pdf(pdf_bytes: bytes, context_text: str = "") -> dict:
+    """
+    Route PDF extraction to the configured AI provider (with automatic fallback).
+    context_text is the raw email body + subject injected into the prompt so the
+    AI can correctly populate project.client, project.title, etc.
+    """
     provider = settings.ai_provider.lower()
 
     if provider == "openai":
         try:
             print("[AI] Drawing costing: using PRIMARY model OpenAI", settings.openai_model_vision)
-            return await _extract_via_openai(pdf_bytes)
+            return await _extract_via_openai(pdf_bytes, context_text)
         except Exception as e:
             print(f"[AI] OpenAI failed for drawing extraction ({type(e).__name__}: {e}). Falling back to Claude...")
             logger.warning(f"OpenAI drawing extraction failed: {e}. Retrying with Claude.")
             print("[AI] Drawing costing: using FALLBACK model Claude", settings.claude_model_drawing)
-            return await _extract_via_claude(pdf_bytes)
+            return await _extract_via_claude(pdf_bytes, context_text)
 
     if provider == "claude":
         print("[AI] Drawing costing: using Claude", settings.claude_model_drawing)
-        return await _extract_via_claude(pdf_bytes)
+        return await _extract_via_claude(pdf_bytes, context_text)
 
     # groq does not support native PDF vision — fall back to Claude
     print("[AI] Drawing costing: Groq unsupported for PDFs, using Claude", settings.claude_model_drawing)
-    return await _extract_via_claude(pdf_bytes)
+    return await _extract_via_claude(pdf_bytes, context_text)
 
 
 def _parse_extraction_response(raw: str) -> dict:

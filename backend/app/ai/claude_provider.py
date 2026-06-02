@@ -435,7 +435,6 @@ class ClaudeProvider(AIProvider):
         try:
             response = await self._messages_create(
                 max_tokens=2048,
-                temperature=0.3,
                 system=system_msg,
                 messages=messages
             )
@@ -453,4 +452,13 @@ class ClaudeProvider(AIProvider):
             )
         except Exception as e:
             logger.error(f"Claude chat error: {e}")
-            return ChatResponse(content=f"Error: {str(e)}", model_used=self.model)
+            raise
+
+    async def complete(self, prompt: str, max_tokens: int = 4000, temperature: float = 0.1) -> str:
+        """Direct completion using Anthropic client."""
+        response = await self.client.messages.create(
+            model=self.model,
+            max_tokens=max_tokens,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        return response.content[0].text

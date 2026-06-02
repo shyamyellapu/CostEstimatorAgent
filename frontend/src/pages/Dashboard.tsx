@@ -137,7 +137,6 @@ export default function Dashboard() {
           <div className="card-body" style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', paddingTop: '0.75rem' }}>
             {[
               { label: 'New Estimate', sub: 'Upload drawings & BOQ', to: '/estimate/new', icon: Plus, color: '#3b82f6', bg: 'var(--primary-50)' },
-              { label: 'Drawing Reader', sub: 'Extract from drawings', to: '/drawing-reader', icon: Package, color: '#8b5cf6', bg: '#f5f3ff' },
               { label: 'BOQ Parser', sub: 'Parse BOQ document', to: '/boq-parser', icon: TrendingUp, color: '#10b981', bg: 'var(--success-50)' },
               { label: 'Cover Letter', sub: 'Generate from quotation', to: '/cover-letter', icon: Clock, color: '#f59e0b', bg: 'var(--warning-50)' },
             ].map(a => (
