@@ -31,6 +31,9 @@ async def lifespan(app: FastAPI):
     """Validate database connectivity and prepare runtime storage."""
     async with engine.connect() as conn:
         await conn.execute(text("SELECT 1"))
+    """Create all DB tables on startup."""
+    # async with engine.begin() as conn:
+    #     await conn.run_sync(lambda conn: Base.metadata.create_all(conn, checkfirst=True))
 
     # Ensure local storage directories exist
     Path(settings.local_storage_path).mkdir(parents=True, exist_ok=True)
