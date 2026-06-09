@@ -9,14 +9,11 @@ requests==2.32.3
 urllib3>=2.2.3,<3.0.0
 chardet>=5.2.0,<6.0.0
 
-<<<<<<< HEAD
 # Database (PostgreSQL only)
 sqlalchemy==2.0.36
-=======
 # Database
 sqlalchemy==2.0.36
 aiosqlite==0.20.0
->>>>>>> azure/main
 asyncpg==0.30.0
 alembic==1.14.0
 
