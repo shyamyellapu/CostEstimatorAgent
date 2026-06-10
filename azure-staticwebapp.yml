@@ -28,5 +28,6 @@ steps:
   inputs:
     app_location: 'frontend'
     output_location: 'dist'
-    azure_static_web_apps_api_token: $(762e6aff5931db7f66e979f4e89f719af948fea4f8e9ac970196ad68ca0d9d5107-3965a4e5-8b46-430d-8a38-31988f85ba990001013090bbae00)
+    azure_static_web_apps_api_token: $(
+AZURE_STATIC_WEB_APPS_API_TOKEN)
   displayName: 'Deploy Static Web App'
