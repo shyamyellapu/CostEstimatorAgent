@@ -13,12 +13,14 @@ export default defineConfig({
     port: 5173,
     proxy: {
       '/api': {
-        target: 'http://localhost:8000',
+        target: 'https://costestimatorbackend-cdckbnh5gkdsfmgr.centralindia-01.azurewebsites.net',
         changeOrigin: true,
+        secure: true,
       },
       '/storage': {
-        target: 'http://localhost:8000',
+        target: 'https://costestimatorbackend-cdckbnh5gkdsfmgr.centralindia-01.azurewebsites.net',
         changeOrigin: true,
+        secure: true,
       },
     },
   },

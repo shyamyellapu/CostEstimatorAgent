@@ -64,7 +64,8 @@ class Settings(BaseSettings):
     # Gmail OAuth2
     gmail_client_id: str = ""
     gmail_client_secret: str = ""
-    gmail_redirect_uri: str = "http://localhost:5173/gmail/callback"
+    # gmail_redirect_uri: str = "http://localhost:5173/gmail/callback"
+    gmail_redirect_uri: str = "https://red-hill-090bbae00.7.azurestaticapps.net/gmail/callback"
 
     # RFQ settings
     rfq_confidence_threshold: float = 0.75
@@ -74,7 +75,16 @@ class Settings(BaseSettings):
     task_worker_max_concurrent: int = 3
 
     # CORS
-    allowed_origins: List[str] = ["http://localhost:5173", "http://localhost:3000"]
+    allowed_origins: List[str] = [
+        # Local development
+        "http://localhost:5173",
+        "http://localhost:3000",
+        # LAN access (e.g. testing from another device on the same network)
+        "http://192.168.5.187:5173",
+        "http://192.168.5.187:3000",
+        # Azure deployed frontend
+        "https://red-hill-090bbae00.7.azurestaticapps.net",
+    ]
 
     # App
     debug: bool = True
