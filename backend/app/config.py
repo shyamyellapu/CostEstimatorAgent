@@ -44,8 +44,8 @@ class Settings(BaseSettings):
     groq_vision_model: str = "llama-3.2-11b-vision-preview"
     # Anthropic (Claude) — used as fallback when ai_provider=openai
     anthropic_api_key: str = ""
-    claude_model: str = "claude-3-5-sonnet-20241022"
-    claude_model_drawing: str = "claude-sonnet-4-20250514"
+    claude_model: str = "claude-sonnet-4-6"
+    claude_model_drawing: str = "claude-sonnet-4-6"
     drawing_costing_template_path: str = "ReferenceFiles/Sample Job Costing Sheet.xlsx"
 
     # Company branding
