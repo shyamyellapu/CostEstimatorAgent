@@ -52,6 +52,14 @@ async def enqueue(
     )
     db.add(task)
     await db.flush()
+    logger.info(
+        "task_enqueued task_id=%s type=%s entity_type=%s entity_id=%s priority=%d",
+        task.id,
+        task_type,
+        entity_type,
+        entity_id,
+        priority,
+    )
     return task
 
 
@@ -69,6 +77,7 @@ async def _ensure_attachment_downloaded(att: RFQAttachment, db: AsyncSession) ->
         return True
 
     if not att.gmail_attachment_id or not att.email_id:
+        logger.warning("attachment_download_unavailable attachment_id=%s reason=missing_gmail_reference", att.id)
         return False
 
     from app.services.gmail_service import GmailSyncService
@@ -80,6 +89,7 @@ async def _ensure_attachment_downloaded(att: RFQAttachment, db: AsyncSession) ->
     email_res = await db.execute(select(RFQEmail).where(RFQEmail.id == att.email_id))
     email: Optional[RFQEmail] = email_res.scalar_one_or_none()
     if not email or not email.mailbox_id:
+        logger.warning("attachment_download_unavailable attachment_id=%s reason=email_or_mailbox_missing", att.id)
         return False
 
     mailbox_res = await db.execute(
@@ -87,16 +97,19 @@ async def _ensure_attachment_downloaded(att: RFQAttachment, db: AsyncSession) ->
     )
     mailbox: Optional[GmailCredential] = mailbox_res.scalar_one_or_none()
     if not mailbox or not mailbox.credentials_json:
+        logger.warning("attachment_download_unavailable attachment_id=%s mailbox_id=%s reason=credentials_missing", att.id, email.mailbox_id)
         return False
 
     dest_dir = os.path.join(settings.local_storage_path, "rfq_uploads", att.rfq_id or "unlinked")
     svc = GmailSyncService(db)
     filepath = await svc.download_attachment(att, mailbox, dest_dir)
     if not filepath:
+        logger.warning("attachment_download_failed attachment_id=%s", att.id)
         return False
 
     att.storage_path = filepath
     await db.flush()
+    logger.info("attachment_downloaded attachment_id=%s path=%s", att.id, filepath)
     return True
 
 
@@ -566,16 +579,26 @@ async def execute_task(task: TaskQueue, db: AsyncSession) -> None:
     task.started_at = datetime.utcnow()
     task.attempts += 1
     await db.flush()
+    logger.info(
+        "task_started task_id=%s type=%s entity_type=%s entity_id=%s attempt=%d",
+        task.id,
+        task.task_type,
+        task.entity_type,
+        task.entity_id,
+        task.attempts,
+    )
 
     try:
         result = await handler(task, db)
         task.status = "completed"
         task.result = result
         task.completed_at = datetime.utcnow()
+        logger.info("task_completed task_id=%s type=%s result=%s", task.id, task.task_type, result)
     except Exception as exc:
         logger.exception("Task %s failed: %s", task.id, exc)
         task.status = "failed" if task.attempts >= task.max_attempts else "retrying"
         task.error_message = str(exc)[:2000]
+        logger.warning("task_marked_%s task_id=%s type=%s attempts=%d", task.status, task.id, task.task_type, task.attempts)
 
     await db.flush()
 

@@ -11,9 +11,6 @@ chardet>=5.2.0,<6.0.0
 
 # Database (PostgreSQL only)
 sqlalchemy==2.0.36
-# Database
-sqlalchemy==2.0.36
-aiosqlite==0.20.0
 asyncpg==0.30.0
 alembic==1.14.0
 

@@ -325,7 +325,9 @@ function GmailSection({ mailboxes, syncing, onSync, onDisconnect, onConnected }:
   const connectGmail = async () => {
     setConnecting(true)
     setError('')
+    console.log("The function is working")
     try {
+      console.log("The function is working")
       const res = await api.get('/gmail/auth-url', { params: { redirect_uri: REDIRECT_URI } })
       const popup = window.open(res.data.auth_url, 'gmail-oauth', 'width=520,height=640,left=200,top=100')
       if (!popup) { setError('Popup was blocked. Allow popups for this site and try again.'); setConnecting(false); return }

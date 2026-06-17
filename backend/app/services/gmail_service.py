@@ -71,6 +71,7 @@ def get_authorization_url(redirect_uri: str, state: Optional[str] = None) -> Tup
 
     import secrets
     generated_state = state or secrets.token_urlsafe(22)
+    logger.info("gmail_authorization_url_build redirect_uri=%s scopes=%s", redirect_uri, ",".join(SCOPES))
     session = OAuth2Session(
         client_id=settings.gmail_client_id,
         redirect_uri=redirect_uri,
@@ -100,11 +101,13 @@ def exchange_code_for_credentials(code: str, redirect_uri: str) -> Dict[str, Any
         client_id=settings.gmail_client_id,
         redirect_uri=redirect_uri,
     )
+    logger.info("gmail_token_exchange_started redirect_uri=%s", redirect_uri)
     token = session.fetch_token(
         _TOKEN_URI,
         code=code,
         client_secret=settings.gmail_client_secret,
     )
+    logger.info("gmail_token_exchange_completed has_refresh_token=%s", bool(token.get("refresh_token")))
     return {
         "token": token.get("access_token"),
         "refresh_token": token.get("refresh_token"),
@@ -163,9 +166,11 @@ def _build_credentials(creds_dict: Dict[str, Any]):
     # A fresh access_token also picks up the current scopes on the refresh_token.
     if creds.refresh_token:
         try:
+            logger.info("gmail_token_refresh_started")
             creds.refresh(Request())
+            logger.info("gmail_token_refresh_completed")
         except Exception as exc:
-            logger.warning("Token refresh failed: %s", exc)
+            logger.warning("gmail_token_refresh_failed error=%s", exc)
             raise
     return creds
 
@@ -338,6 +343,7 @@ class GmailSyncService:
         )
         existing = result.scalar_one_or_none()
         if existing:
+            logger.info("gmail_credential_update email=%s mailbox_id=%s", email_address, existing.id)
             existing.credentials_json = creds_dict
             existing.is_active = True
             if display_name:
@@ -352,6 +358,7 @@ class GmailSyncService:
         )
         self.db.add(cred)
         await self.db.flush()
+        logger.info("gmail_credential_created email=%s mailbox_id=%s", email_address, cred.id)
         return cred
 
     async def sync_mailbox(
@@ -366,16 +373,18 @@ class GmailSyncService:
         import asyncio
 
         if not mailbox.credentials_json:
+            logger.warning("gmail_sync_skipped_no_credentials mailbox_id=%s email=%s", mailbox.id, mailbox.email_address)
             return {"error": "no credentials", "fetched": 0, "new_rfq": 0, "skipped": 0,
                     "errors": 0, "available": 0, "needs_reauth": True}
 
         try:
+            logger.info("gmail_sync_mailbox_started mailbox_id=%s email=%s max_messages=%d", mailbox.id, mailbox.email_address, max_messages)
             loop = asyncio.get_event_loop()
             service = await loop.run_in_executor(
                 None, lambda: _build_gmail_service(mailbox.credentials_json)
             )
         except Exception as exc:
-            logger.error("Gmail auth failed for %s: %s", mailbox.email_address, exc)
+            logger.exception("gmail_auth_failed mailbox_id=%s email=%s", mailbox.id, mailbox.email_address)
             return {"error": str(exc), "fetched": 0, "new_rfq": 0, "skipped": 0,
                     "errors": 0, "available": 0, "needs_reauth": True}
 
@@ -394,7 +403,7 @@ class GmailSyncService:
                 None, lambda: service.users().messages().list(**list_params).execute()
             )
         except Exception as exc:
-            logger.error("Gmail list failed for %s: %s", mailbox.email_address, exc)
+            logger.exception("gmail_list_failed mailbox_id=%s email=%s", mailbox.id, mailbox.email_address)
             return {**counters, "error": str(exc), "needs_reauth": True}
 
         messages = resp.get("messages", [])
@@ -421,7 +430,7 @@ class GmailSyncService:
                 )
             except Exception as exc:
                 err_str = str(exc)
-                logger.warning("Could not fetch message %s: %s", mid, err_str)
+                logger.warning("gmail_message_fetch_failed mailbox_id=%s message_id=%s error=%s", mailbox.id, mid, err_str)
                 counters["errors"] += 1
                 # Detect scope restriction — mark mailbox as needing re-auth
                 if "Metadata scope" in err_str or ("403" in err_str and "scope" in err_str.lower()):
@@ -452,6 +461,14 @@ class GmailSyncService:
             )
             self.db.add(email_record)
             await self.db.flush()
+            logger.info(
+                "gmail_message_saved mailbox_id=%s message_id=%s email_id=%s email_type=%s attachments=%d",
+                mailbox.id,
+                mid,
+                email_record.id,
+                email_type,
+                len(parsed["attachments"]),
+            )
 
             # Store attachment stubs (data downloaded on demand)
             for att in parsed["attachments"]:
@@ -482,6 +499,7 @@ class GmailSyncService:
         # Update last synced timestamp
         mailbox.last_synced = datetime.utcnow()
         await self.db.flush()
+        logger.info("gmail_sync_mailbox_completed mailbox_id=%s counters=%s", mailbox.id, counters)
 
         return counters
 
@@ -495,6 +513,7 @@ class GmailSyncService:
         import os, aiofiles, asyncio  # type: ignore
 
         if not attachment.gmail_attachment_id or not mailbox.credentials_json:
+            logger.warning("gmail_attachment_download_skipped attachment_id=%s reason=missing_id_or_credentials", attachment.id)
             return None
 
         # Need the parent email's gmail_message_id
@@ -503,9 +522,16 @@ class GmailSyncService:
         )
         email = result.scalar_one_or_none()
         if not email:
+            logger.warning("gmail_attachment_download_skipped attachment_id=%s reason=email_not_found", attachment.id)
             return None
 
         try:
+            logger.info(
+                "gmail_attachment_download_started attachment_id=%s message_id=%s filename=%s",
+                attachment.id,
+                email.gmail_message_id,
+                attachment.original_filename,
+            )
             loop = asyncio.get_event_loop()
             service = await loop.run_in_executor(
                 None, lambda: _build_gmail_service(mailbox.credentials_json)
@@ -519,7 +545,7 @@ class GmailSyncService:
                 ).execute()
             )
         except Exception as exc:
-            logger.error("Attachment download failed: %s", exc)
+            logger.exception("gmail_attachment_download_failed attachment_id=%s filename=%s", attachment.id, attachment.original_filename)
             return None
 
         raw_data = base64.urlsafe_b64decode(att_data["data"] + "==")
@@ -532,6 +558,7 @@ class GmailSyncService:
         async with aiofiles.open(filepath, "wb") as f:
             await f.write(raw_data)
 
+        logger.info("gmail_attachment_download_completed attachment_id=%s path=%s bytes=%d", attachment.id, filepath, len(raw_data))
         return filepath
 
 
