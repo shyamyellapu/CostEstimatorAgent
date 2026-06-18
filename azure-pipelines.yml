@@ -39,7 +39,7 @@ steps:
 - task: AzureWebApp@1
   displayName: 'Deploy Backend to App Service'
   inputs:
-    azureSubscription: 'cost-estimator-sc'
+    azureSubscription: 'Azure subscription 1'
     appType: 'webAppLinux'
     appName: 'costestimatorbackend'
     package: '$(Build.ArtifactStagingDirectory)/backend.zip'
