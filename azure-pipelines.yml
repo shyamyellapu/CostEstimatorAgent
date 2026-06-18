@@ -1,8 +1,3 @@
-# Starter pipeline
-# Start with a minimal pipeline that you can customize to build and deploy your code.
-# Add steps that build, run tests, deploy, and more:
-# https://aka.ms/yaml
-
 trigger:
 - main
 
@@ -13,10 +8,6 @@ variables:
   pythonVersion: '3.11'
 
 steps:
-
-# ===============================
-# BACKEND - FASTAPI
-# ===============================
 
 - task: UsePythonVersion@0
   inputs:
@@ -29,46 +20,28 @@ steps:
     pip install -r requirements.txt
   displayName: 'Install Backend Dependencies'
 
-# Optional tests
-# - script: |
-#     cd backend
-#     pytest
-#   displayName: 'Run Backend Tests'
-#   continueOnError: true
-
-# ===============================
-# FRONTEND - REACT
-# ===============================
-
-- task: NodeTool@0
+- task: ArchiveFiles@2
+  displayName: 'Archive Backend'
   inputs:
-    versionSpec: '20.x'
-  # displayName: 'Install Node.js'
-  displayName: 'Use Node.js 20'
-
-- script: |
-    node -v
-    npm -v
-  displayName: 'Check Node Version'
-
-
-- script: |
-    cd frontend
-    npm install
-  displayName: 'Install Frontend Dependencies'
-
-- script: |
-    cd frontend
-    npm install
-    npm run build
-  displayName: 'Build React App'
-
-# ===============================
-# PUBLISH BUILD
-# ===============================
+    rootFolderOrFile: '$(System.DefaultWorkingDirectory)/backend'
+    includeRootFolder: false
+    archiveType: 'zip'
+    archiveFile: '$(Build.ArtifactStagingDirectory)/backend.zip'
+    replaceExistingArchive: true
 
 - task: PublishBuildArtifacts@1
+  displayName: 'Publish Backend Artifact'
   inputs:
-    PathtoPublish: 'frontend/dist'
-    ArtifactName: 'frontend-build'
+    PathtoPublish: '$(Build.ArtifactStagingDirectory)/backend.zip'
+    ArtifactName: 'backend-build'
     publishLocation: 'Container'
+
+- task: AzureWebApp@1
+  displayName: 'Deploy Backend to App Service'
+  inputs:
+    azureSubscription: '$(AZURE_SERVICE_CONNECTION)'
+    appType: 'webAppLinux'
+    appName: '$(AZURE_BACKEND_APP_NAME)'
+    package: '$(Build.ArtifactStagingDirectory)/backend.zip'
+    runtimeStack: 'PYTHON|3.11'
+    startUpCommand: 'cd /home/site/wwwroot && uvicorn app.main:app --host 0.0.0.0 --port 8000'
