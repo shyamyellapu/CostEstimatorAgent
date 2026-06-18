@@ -39,9 +39,9 @@ steps:
 - task: AzureWebApp@1
   displayName: 'Deploy Backend to App Service'
   inputs:
-    azureSubscription: '$(AZURE_SERVICE_CONNECTION)'
+    azureSubscription: 'azure-service-connection'   # exact name from Step 1
     appType: 'webAppLinux'
-    appName: '$(AZURE_BACKEND_APP_NAME)'
+    appName: 'your-app-service-name'                # exact App Service name
     package: '$(Build.ArtifactStagingDirectory)/backend.zip'
     runtimeStack: 'PYTHON|3.11'
     startUpCommand: 'cd /home/site/wwwroot && uvicorn app.main:app --host 0.0.0.0 --port 8000'
