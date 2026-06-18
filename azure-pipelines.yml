@@ -20,30 +20,8 @@ steps:
     pip install -r requirements.txt
   displayName: 'Install Backend Dependencies'
 
-- task: ArchiveFiles@2
-  displayName: 'Archive Backend'
-  inputs:
-    rootFolderOrFile: '$(System.DefaultWorkingDirectory)/backend'
-    includeRootFolder: false
-    archiveType: 'zip'
-    archiveFile: '$(Build.ArtifactStagingDirectory)/backend.zip'
-    replaceExistingArchive: true
-
-- task: PublishBuildArtifacts@1
-  displayName: 'Publish Backend Artifact'
-  inputs:
-    PathtoPublish: '$(Build.ArtifactStagingDirectory)/backend.zip'
-    ArtifactName: 'backend-build'
-    publishLocation: 'Container'
-
-# - task: AzureWebApp@1
-#   displayName: 'Deploy Backend to App Service'
-#   inputs:
-#     azureSubscription: 'cost-estimator-sc'
-#     appType: 'webAppLinux'
-#     appName: 'costestimatorbackend'
-#     package: '$(Build.ArtifactStagingDirectory)/backend.zip'
-#     runtimeStack: 'PYTHON|3.11'
-#     startUpCommand: 'cd /home/site/wwwroot && uvicorn app.main:app --host 0.0.0.0 --port 8000'
-#   env:
-#     AZURE_HTTP_USER_AGENT: ''
+- script: |
+    cd backend
+    python -m py_compile app/main.py
+    echo "Syntax check passed"
+  displayName: 'Validate Backend Code'
