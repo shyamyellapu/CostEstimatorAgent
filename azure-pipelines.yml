@@ -20,8 +20,28 @@ steps:
     pip install -r requirements.txt
   displayName: 'Install Backend Dependencies'
 
-- script: |
-    cd backend
-    python -m py_compile app/main.py
-    echo "Syntax check passed"
-  displayName: 'Validate Backend Code'
+- task: ArchiveFiles@2
+  displayName: 'Archive Backend'
+  inputs:
+    rootFolderOrFile: '$(System.DefaultWorkingDirectory)/backend'
+    includeRootFolder: false
+    archiveType: 'zip'
+    archiveFile: '$(Build.ArtifactStagingDirectory)/backend.zip'
+    replaceExistingArchive: true
+
+- task: PublishBuildArtifacts@1
+  displayName: 'Publish Backend Artifact'
+  inputs:
+    PathtoPublish: '$(Build.ArtifactStagingDirectory)/backend.zip'
+    ArtifactName: 'backend-build'
+    publishLocation: 'Container'
+
+- task: AzureWebApp@1
+  displayName: 'Deploy Backend to App Service'
+  inputs:
+    appType: 'webAppLinux'
+    appName: 'costestimatorbackend'
+    package: '$(Build.ArtifactStagingDirectory)/backend.zip'
+    publishProfileContent: '$(AZURE_WEBAPP_PUBLISH_PROFILE)'
+    runtimeStack: 'PYTHON|3.11'
+    startUpCommand: 'gunicorn -w 1 -k uvicorn.workers.UvicornWorker app.main:app --bind 0.0.0.0:8000 --timeout 120'
