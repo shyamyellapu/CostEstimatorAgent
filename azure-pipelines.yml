@@ -36,13 +36,13 @@ steps:
     ArtifactName: 'backend-build'
     publishLocation: 'Container'
 
-- script: |
-    curl -X POST \
-      "https://costestimatorbackend-cdckbnh5gkdsfmgr.scm.centralindia-01.azurewebsites.net/api/zipdeploy" \
-      -u "$(PUBLISH_PROFILE_USERNAME):$(PUBLISH_PROFILE_PASSWORD)" \
-      --data-binary @$(Build.ArtifactStagingDirectory)/backend.zip \
-      -H "Content-Type: application/octet-stream" \
-      --fail \
-      --silent \
-      --show-error
-  displayName: 'Deploy via Zip Deploy'
+- task: AzureRmWebAppDeployment@4
+  displayName: 'Deploy Backend to App Service'
+  inputs:
+    ConnectionType: 'AzureRM'
+    azureSubscription: 'cost-estimator-sc'
+    appType: 'webAppLinux'
+    WebAppName: 'costestimatorbackend'
+    packageForLinux: '$(Build.ArtifactStagingDirectory)/backend.zip'
+    RuntimeStack: 'PYTHON|3.11'
+    StartupCommand: 'gunicorn -w 1 -k uvicorn.workers.UvicornWorker app.main:app --bind 0.0.0.0:8000 --timeout 120'
