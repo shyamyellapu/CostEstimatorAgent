@@ -5,9 +5,12 @@ Drawing Extraction Completeness Validation
 Validation utilities for ensuring drawing extraction completeness
 based on the Drawing Reader Accuracy Report requirements.
 """
+import logging
 from typing import Dict, List, Optional, Tuple
 from dataclasses import dataclass
 import re
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass

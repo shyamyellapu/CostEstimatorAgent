@@ -5,6 +5,7 @@ Surface area must be provided or estimated from item dimensions.
 
 IMPROVED: Enhanced precision using Decimal arithmetic and comprehensive validation.
 """
+import logging
 from dataclasses import dataclass
 from decimal import Decimal
 import math
@@ -13,6 +14,8 @@ from app.services.precision_utils import (
     to_decimal, round_cost, round_area, round_dimension,
     validate_positive, to_float, format_formula_value
 )
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass

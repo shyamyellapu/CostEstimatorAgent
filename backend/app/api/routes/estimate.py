@@ -85,7 +85,9 @@ async def upload_files(
         )
         job = result.scalar_one_or_none()
         if not job:
+            logger.warning("upload_job_not_found job_id=%s", job_id)
             raise HTTPException(status_code=404, detail="Job not found")
+        logger.debug("upload_appending_to_job job_id=%s job_number=%s", job.id, job.job_number)
     else:
         job_number = f"JOB-{datetime.now().strftime('%Y%m%d')}-{uuid.uuid4().hex[:6].upper()}"
         job = Job(
@@ -97,12 +99,27 @@ async def upload_files(
         )
         db.add(job)
         await db.flush()
+        logger.info(
+            "job_created job_id=%s job_number=%s client=%s project=%s",
+            job.id, job_number, client_name, project_name,
+        )
 
     uploaded = []
     for file in files:
         content = await file.read()
         ftype = _detect_file_type(file.filename, file.content_type or "")
-        storage = await storage_service.save_upload(content, file.filename, str(job.id))
+        logger.debug(
+            "file_upload_start filename=%s size=%d type=%s job_id=%s",
+            file.filename, len(content), ftype, job.id,
+        )
+        try:
+            storage = await storage_service.save_upload(content, file.filename, str(job.id))
+        except Exception as exc:
+            logger.error(
+                "file_upload_storage_error filename=%s job_id=%s exc=%s",
+                file.filename, job.id, exc, exc_info=True,
+            )
+            raise HTTPException(status_code=500, detail=f"Storage error: {exc}") from exc
         uf = UploadedFile(
             job_id=job.id,
             company_id=job.company_id,
@@ -123,6 +140,10 @@ async def upload_files(
         )
         db.add(uf)
         await db.flush()
+        logger.info(
+            "file_uploaded file_id=%s filename=%s type=%s size=%d job_id=%s",
+            uf.id, file.filename, ftype, storage["file_size"], job.id,
+        )
         uploaded.append({
             "file_id": str(uf.id),
             "filename": file.filename,
@@ -131,6 +152,7 @@ async def upload_files(
         })
 
     await db.commit()
+    logger.info("upload_complete job_id=%s files_uploaded=%d", job.id, len(uploaded))
     return {
         "job_id": str(job.id),
         "job_number": job.job_number,
@@ -152,6 +174,7 @@ async def extract_from_files(
     )
     job = result.scalar_one_or_none()
     if not job:
+        logger.warning("extract_job_not_found job_id=%s", job_id)
         raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
 
     files_result = await db.execute(
@@ -159,13 +182,16 @@ async def extract_from_files(
     )
     files = files_result.scalars().all()
     if not files:
+        logger.warning("extract_no_files job_id=%s", job_id)
         raise HTTPException(status_code=400, detail="No uploaded files found for this job")
 
+    logger.info("extraction_start job_id=%s files=%d provider=%s", job.id, len(files), get_ai_provider().provider_name)
     job.status = JobStatus.EXTRACTING
     ai = get_ai_provider()
     all_extractions = []
 
     for uf in files:
+        logger.debug("extraction_file_start file_id=%s filename=%s type=%s", uf.id, uf.original_filename, uf.file_type)
         try:
             file_bytes = await storage_service.get_file(uf.storage_path)
 
@@ -180,16 +206,21 @@ async def extract_from_files(
 
                     # Only use text if there's meaningful extractable text (> 200 chars)
                     if len(text.strip()) > 200:
+                        logger.debug("extraction_using_text filename=%s text_len=%d", uf.original_filename, len(text))
                         text_extraction = await ai.extract_from_document(
                             text.encode("utf-8"), uf.file_type, uf.original_filename, additional_context
                         )
 
                     vision_bytes = pdf_to_images(file_bytes)
                     if vision_bytes and (text_extraction is None or _extraction_score(text_extraction) == 0):
+                        logger.debug("extraction_using_vision filename=%s image_pages=%d", uf.original_filename, len(vision_bytes) if isinstance(vision_bytes, list) else 1)
                         vision_extraction = await ai.extract_from_image(vision_bytes, uf.original_filename, additional_context)
 
                     if text_extraction and vision_extraction:
-                        extraction = text_extraction if _extraction_score(text_extraction) >= _extraction_score(vision_extraction) else vision_extraction
+                        ts = _extraction_score(text_extraction)
+                        vs = _extraction_score(vision_extraction)
+                        extraction = text_extraction if ts >= vs else vision_extraction
+                        logger.debug("extraction_mode_selected filename=%s text_score=%d vision_score=%d chosen=%s", uf.original_filename, ts, vs, "text" if ts >= vs else "vision")
                     elif text_extraction:
                         extraction = text_extraction
                     elif vision_extraction:
@@ -216,6 +247,11 @@ async def extract_from_files(
             )
             db.add(ed)
             uf.is_processed = "done"
+            logger.info(
+                "extraction_file_ok file_id=%s filename=%s confidence=%.2f dimensions=%d flags=%d",
+                uf.id, uf.original_filename, extraction.overall_confidence,
+                len(extraction.dimensions), len(extraction.flags),
+            )
             all_extractions.append({
                 "file_id": str(uf.id),
                 "filename": uf.original_filename,
@@ -227,9 +263,11 @@ async def extract_from_files(
                 "data": extraction.model_dump(),
             })
         except Exception as e:
-            import traceback
-            logger.error(f"Extraction failed for {uf.original_filename}: {e}")
-            logger.error(f"Full traceback:\n{traceback.format_exc()}")
+            import traceback as _tb
+            logger.error(
+                "extraction_file_failed file_id=%s filename=%s exc_type=%s exc=%s\n%s",
+                uf.id, uf.original_filename, type(e).__name__, e, _tb.format_exc(),
+            )
             uf.is_processed = "failed"
             all_extractions.append({
                 "file_id": str(uf.id),
@@ -244,6 +282,12 @@ async def extract_from_files(
                     details_json={"files_processed": len(files)}))
     await db.commit()
 
+    ok_count = sum(1 for e in all_extractions if "error" not in e)
+    err_count = len(all_extractions) - ok_count
+    logger.info(
+        "extraction_complete job_id=%s ok=%d errors=%d",
+        job_id, ok_count, err_count,
+    )
     return {
         "job_id": job_id,
         "status": "pending_confirmation",

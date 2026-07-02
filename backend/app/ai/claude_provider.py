@@ -78,9 +78,7 @@ class ClaudeProvider(AIProvider):
         import re
         from json_repair import repair_json
 
-        # Log response for debugging
-        logger.info(f"Claude response length: {len(content)}")
-        logger.info(f"Claude response (first 1000 chars): {content[:1000]}")
+        logger.debug("claude_parse_json_response content_len=%d", len(content))
         
         if not content or not content.strip():
             raise ValueError("Empty response from Claude")
@@ -89,43 +87,43 @@ class ClaudeProvider(AIProvider):
         if "```json" in content or "```" in content:
             json_match = re.search(r'```json\s*\n(.*?)\n```', content, re.DOTALL)
             if json_match:
-                logger.info("Found ```json block in response")
+                logger.debug("claude_json_found_in_json_block")
                 content = json_match.group(1)
             else:
                 json_match = re.search(r'```\s*\n(.*?)\n```', content, re.DOTALL)
                 if json_match:
-                    logger.info("Found generic ``` block in response")
+                    logger.debug("claude_json_found_in_generic_block")
                     content = json_match.group(1)
         
         # If still not a JSON object, extract from surrounding text
         if not content.strip().startswith("{"):
             json_match = re.search(r'(\{.*\})', content, re.DOTALL)
             if json_match:
-                logger.info("Extracted JSON object from text")
+                logger.debug("claude_json_extracted_from_text")
                 content = json_match.group(1)
         
         # First attempt: strict parse
         try:
             return json.loads(content)
         except json.JSONDecodeError as e:
-            logger.warning(f"Strict JSON parse failed ({e}), attempting repair...")
+            logger.warning("claude_json_strict_parse_failed error=%s attempting_repair=True", e)
         
         # Second attempt: repair and parse (handles trailing commas, missing commas, truncation, etc.)
         try:
             repaired = repair_json(content, return_objects=True)
             if isinstance(repaired, dict):
-                logger.info("JSON repaired successfully")
+                logger.debug("claude_json_repaired_ok")
                 return repaired
-            # repair_json returned a non-dict (e.g. list or string) — try loading repaired string
             repaired_str = repair_json(content)
             result = json.loads(repaired_str)
             if isinstance(result, dict):
-                logger.info("JSON repaired and parsed successfully")
                 return result
             raise ValueError(f"Repaired JSON is not a dict: {type(result)}")
         except Exception as repair_err:
-            logger.error(f"JSON repair also failed: {repair_err}")
-            logger.error(f"Content that failed to parse (first 2000 chars): {content[:2000]}")
+            logger.error(
+                "claude_json_repair_failed error=%s content_preview=%s",
+                repair_err, content[:500], exc_info=True,
+            )
             raise json.JSONDecodeError(f"Could not parse or repair JSON: {repair_err}", content, 0)
 
     def _normalize_cover_letter_draft_data(
@@ -170,6 +168,7 @@ class ClaudeProvider(AIProvider):
         additional_context: Optional[str] = None
     ) -> ExtractedDataResponse:
         """Extract structured engineering data from document text."""
+        import time as _time
         text = file_bytes.decode("utf-8", errors="replace")
         context_note = f"\nAdditional context: {additional_context}" if additional_context else ""
         truncated_text = text[:DOCUMENT_TEXT_CHAR_LIMIT]
@@ -178,7 +177,11 @@ class ClaudeProvider(AIProvider):
             text=truncated_text,
             context=context_note
         )
-        
+        logger.debug(
+            "claude_extract_document_start filename=%s text_len=%d model=%s",
+            filename, len(truncated_text), self.model,
+        )
+        _t0 = _time.perf_counter()
         try:
             response = await self._messages_create(
                 max_tokens=6000,
@@ -188,13 +191,26 @@ class ClaudeProvider(AIProvider):
                     {"role": "user", "content": prompt}
                 ]
             )
-            
+            elapsed_ms = (_time.perf_counter() - _t0) * 1000
+            usage = getattr(response, "usage", None)
+            logger.info(
+                "claude_extract_document_ok filename=%s model=%s elapsed_ms=%.0f "
+                "input_tokens=%s output_tokens=%s",
+                filename, self.model, elapsed_ms,
+                getattr(usage, "input_tokens", "?"),
+                getattr(usage, "output_tokens", "?"),
+            )
             content = response.content[0].text
             data = self._parse_json_response(content)
             data["raw_text"] = text
             return ExtractedDataResponse(**data)
         except Exception as e:
-            logger.error(f"Claude document extraction error: {e}")
+            elapsed_ms = (_time.perf_counter() - _t0) * 1000
+            logger.error(
+                "claude_extract_document_failed filename=%s model=%s elapsed_ms=%.0f "
+                "exc_type=%s exc=%s",
+                filename, self.model, elapsed_ms, type(e).__name__, e, exc_info=True,
+            )
             raise
 
     async def extract_from_image(
@@ -240,38 +256,39 @@ class ClaudeProvider(AIProvider):
             })
 
         try:
-            logger.info(f"Calling Claude with model: {self.model}")
-            logger.info(f"Image count: {len(image_list)}, MIME type: {mime}")
+            import time as _time
+            logger.debug(
+                "claude_extract_image_start filename=%s images=%d model=%s",
+                filename, len(image_list), self.model,
+            )
+            _t0 = _time.perf_counter()
             
             response = await self._messages_create(
-                max_tokens=8192,  # Increased for complex drawings
-                temperature=0.0,   # Zero temp for deterministic JSON
+                max_tokens=8192,
+                temperature=0.0,
                 system=DRAWING_READER_SYSTEM_PROMPT,
                 messages=[
                     {"role": "user", "content": user_content}
                 ]
             )
-            
-            # Log response structure for debugging
-            logger.info(f"Claude response type: {type(response)}")
-            logger.info(f"Response model: {response.model if hasattr(response, 'model') else 'N/A'}")
-            logger.info(f"Response content type: {type(response.content)}")
-            logger.info(f"Response content length: {len(response.content) if response.content else 0}")
+            elapsed_ms = (_time.perf_counter() - _t0) * 1000
+            usage = getattr(response, "usage", None)
+            logger.info(
+                "claude_extract_image_ok filename=%s model=%s images=%d elapsed_ms=%.0f "
+                "input_tokens=%s output_tokens=%s",
+                filename, self.model, len(image_list), elapsed_ms,
+                getattr(usage, "input_tokens", "?"),
+                getattr(usage, "output_tokens", "?"),
+            )
             
             if not response.content or len(response.content) == 0:
                 raise ValueError("Empty content in Claude response")
             
-            # Handle multiple content blocks if present
             if len(response.content) > 1:
-                logger.warning(f"Multiple content blocks: {len(response.content)}")
-                for i, block in enumerate(response.content):
-                    logger.info(f"Block {i}: type={type(block)}, {block}")
+                logger.warning("claude_multiple_content_blocks filename=%s blocks=%d", filename, len(response.content))
             
             content = response.content[0].text
-            logger.info(f"Extracted text length: {len(content)}")
-            logger.info(f"First 1000 chars: {content[:1000]}")
-            logger.info(f"Last 500 chars: {content[-500:]}")
-            
+            logger.debug("claude_image_response_len filename=%s content_len=%d", filename, len(content))
             data = self._parse_json_response(content)
 
             # Robust repair for flag format and flatten nested structures
@@ -320,10 +337,10 @@ class ClaudeProvider(AIProvider):
             data["dimensions"] = dimensions
             return ExtractedDataResponse(**data)
         except Exception as e:
-            import traceback
-            logger.error(f"Claude image extraction error: {e}")
-            logger.error(f"Exception type: {type(e).__name__}")
-            logger.error(f"Full traceback:\n{traceback.format_exc()}")
+            logger.error(
+                "claude_extract_image_failed filename=%s exc_type=%s exc=%s",
+                filename, type(e).__name__, e, exc_info=True,
+            )
             raise
 
     async def parse_boq(

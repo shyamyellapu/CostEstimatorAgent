@@ -15,7 +15,10 @@ Usage:
     2. Costing engine retrieves active rates from database
     3. Rate overrides require admin approval and audit trail
 """
+import logging
 from typing import Dict, Any, List
+
+logger = logging.getLogger(__name__)
 
 # ═══════════════════════════════════════════════════════════════
 # MATERIAL RATES (Row 23)

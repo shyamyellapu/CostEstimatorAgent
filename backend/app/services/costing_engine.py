@@ -208,7 +208,10 @@ def run_costing_engine(
         unit_wt    = _get("unit_weight_kg_per_m", default=0.0) or 0.0
         surf_area  = _get("surface_area_m2",      default=0.0) or 0.0
 
-        logger.info(f"Item {tag}: pre_wt={pre_wt}, unit_wt={unit_wt}, qty={qty}, l={l_mm}")
+        logger.debug(
+            "item_weight_phase tag=%s pre_wt=%.3f unit_wt=%.3f qty=%.2f l_mm=%s",
+            tag, pre_wt, unit_wt, qty, l_mm,
+        )
 
         try:
             if pre_wt > 0:
@@ -230,6 +233,7 @@ def run_costing_engine(
                 weight_kg = w_res.weight_kg
                 w_formula = w_res.formula
 
+            logger.debug("item_weight_ok tag=%s weight_kg=%.3f formula=%s", tag, weight_kg, w_formula)
             breakdown = LineItemCostBreakdown(
                 item_tag=tag, description=desc, section_type=section_type,
                 quantity=qty, weight_kg=weight_kg, weight_formula=w_formula,
@@ -246,7 +250,10 @@ def run_costing_engine(
             audit_trail.append({"item_tag": tag, "status": "weight_ok", "weight_kg": round(weight_kg, 3)})
 
         except Exception as e:
-            logger.error(f"Weight error for {tag}: {e}")
+            logger.error(
+                "item_weight_error tag=%s exc_type=%s exc=%s",
+                tag, type(e).__name__, e, exc_info=True,
+            )
             audit_trail.append({"item_tag": tag, "status": "error", "error": str(e)})
 
     # ────────────────────────────────────────────────────────────────────────
@@ -257,7 +264,10 @@ def run_costing_engine(
     ai_steel_kg = _safe_float(ci.get("structural_steel_total_kg"), 0.0) or 0.0
     summed_kg   = sum(b.weight_kg for b in item_breakdowns)
     total_steel_kg = ai_steel_kg if ai_steel_kg > 0 else summed_kg
-    logger.info(f"Steel kg: AI={ai_steel_kg:.3f}, summed={summed_kg:.3f}, using={total_steel_kg:.3f}")
+    logger.info(
+        "costing_phase2_start job_id=%s items=%d ai_steel_kg=%.3f summed_kg=%.3f using_kg=%.3f",
+        job_id, len(item_breakdowns), ai_steel_kg, summed_kg, total_steel_kg,
+    )
 
     # STEP 1 — Structural Steel Material
     steel_cost = total_steel_kg * r["material_rate_per_kg"]
@@ -351,7 +361,7 @@ def run_costing_engine(
         "net_profit":        net_profit,
     })
 
-    return CostingResult(
+    result = CostingResult(
         job_id=job_id,
         line_items=item_breakdowns,
         total_weight_kg=round(total_steel_kg, 3),
@@ -391,3 +401,10 @@ def run_costing_engine(
         packing_cost=packing_cost,
         grand_total=grand_total,
     )
+
+    logger.info(
+        "costing_complete job_id=%s steel_kg=%.3f direct_cost=%.2f "
+        "overhead=%.2f grand_total=%.2f selling_price=%.2f",
+        job_id, total_steel_kg, total_direct, overhead_cost, grand_total, selling_price,
+    )
+    return result

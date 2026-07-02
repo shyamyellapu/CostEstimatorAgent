@@ -141,7 +141,7 @@ export default function AttachmentCard({ attachment: att, rfqId, onUpdate }: Pro
         {att.storage_url && (() => {
           const absoluteUrl = att.storage_url.startsWith('http')
             ? att.storage_url
-            : `${import.meta.env.VITE_BACKEND_URL || 'https://costestimatorbackend-cdckbnh5gkdsfmgr.centralindia-01.azurewebsites.net'}${att.storage_url}`
+            : att.storage_url
           return (
             <a
               href={absoluteUrl}

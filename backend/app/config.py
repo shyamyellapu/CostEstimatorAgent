@@ -75,22 +75,25 @@ class Settings(BaseSettings):
     task_worker_max_concurrent: int = 3
 
     # CORS
-    allowed_origins: List[str] = ["*"]
-    # allowed_origins: List[str] = [
-    #     # Local development
-    #     "http://localhost:5173",
-    #     "http://localhost:3000",
-    #     # LAN access (e.g. testing from another device on the same network)
-    #     "http://192.168.5.187:5173",
-    #     "http://192.168.5.187:3000",
-    #     # Azure deployed frontend
-    #     "https://red-hill-090bbae00.7.azurestaticapps.net",
-        
-    # ]
+    allowed_origins: List[str] = [
+        # Local development
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+        # LAN access (e.g. testing from another device on the same network)
+        "http://192.168.5.187:5173",
+        "http://192.168.5.187:3000",
+        # Azure deployed frontend
+        "https://red-hill-090bbae00.7.azurestaticapps.net",
+    ]
 
     # App
     debug: bool = True
     log_level: str = "INFO"
+    log_dir: str = "./logs"
+    log_max_bytes: int = 10 * 1024 * 1024   # 10 MB per rotating file
+    log_backup_count: int = 5               # keep 5 backup files
 
     class Config:
         env_file = _ENV_FILE

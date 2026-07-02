@@ -9,9 +9,12 @@ Used for:
 2. Auto-populating missing weight data
 3. Detecting extraction errors (weight > 20% off = flag)
 """
+import logging
 from typing import Dict, Optional, Tuple
 from decimal import Decimal
 import re
+
+logger = logging.getLogger(__name__)
 
 # Standard unit weights in kg/m
 SECTION_WEIGHTS: Dict[str, float] = {

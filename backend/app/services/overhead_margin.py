@@ -5,6 +5,7 @@ Selling:  Selling Price = Total Cost (incl. overhead) × (1 + Margin %)
 
 IMPROVED: Enhanced precision using Decimal arithmetic and comprehensive validation.
 """
+import logging
 from dataclasses import dataclass
 from decimal import Decimal
 
@@ -12,6 +13,8 @@ from app.services.precision_utils import (
     to_decimal, round_cost, calculate_percentage,
     validate_cost, validate_positive, to_float, format_formula_value
 )
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass

@@ -1,10 +1,14 @@
 import axios from 'axios'
 
-// const API_BASE_URL = import.meta.env.VITE_BACKEND_URL
-const API_BASE_URL = import.meta.env.VITE_BACKEND_URL||'https://costestimatorbackend-cdckbnh5gkdsfmgr.centralindia-01.azurewebsites.net'
+// Use relative URL in dev so Vite proxy handles requests (no CORS).
+// Use absolute URL in production (VITE_BACKEND_URL set at build time).
+const _backendUrl = import.meta.env.VITE_BACKEND_URL
+const API_BASE_URL = (_backendUrl && !_backendUrl.startsWith('http://127') && !_backendUrl.startsWith('http://localhost'))
+  ? `${_backendUrl}/api`
+  : '/api'
 
 export const api = axios.create({
-  baseURL: `${API_BASE_URL}/api`,
+  baseURL: API_BASE_URL,
   timeout: 120000,
   headers: {
     'Content-Type': 'application/json',

@@ -9,6 +9,7 @@ Manhours two modes:
 
 IMPROVED: Enhanced precision using Decimal arithmetic and comprehensive validation.
 """
+import logging
 from dataclasses import dataclass
 from typing import Optional
 from enum import Enum
@@ -18,6 +19,8 @@ from app.services.precision_utils import (
     to_decimal, round_cost, round_manhour, validate_positive,
     to_float, format_formula_value
 )
+
+logger = logging.getLogger(__name__)
 
 
 class FabCalcMode(str, Enum):
