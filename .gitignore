@@ -5,6 +5,10 @@
 .env.example
 
 storage/
+# Log files (rotating — do not commit)
+backend/logs/
+logs/
+*.log
 # Python
 __pycache__/
 backend\app\api\__pycache__

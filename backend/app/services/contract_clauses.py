@@ -3,6 +3,9 @@ C&J Gulf Master Fabrication Template Clauses.
 Version 2.0 (15th January 2026).
 34 Clauses defining the legal and commercial basis for fabrication projects.
 """
+import logging
+
+logger = logging.getLogger(__name__)
 
 CLAUSES = {
     "1": {"title": "Definitions & Interpretations", "content": "Defines key terms such as 'Contractor' (C&J Gulf), 'Client', 'Project', and 'Scope'."},

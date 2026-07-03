@@ -3,6 +3,7 @@ RFQ API routes — full CRUD + extraction + validation + review + costing conver
 """
 from __future__ import annotations
 
+import logging
 import os
 import shutil
 import uuid
@@ -15,6 +16,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy import select, func, delete
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.api.deps import get_db
 from app.config import settings
@@ -27,6 +29,7 @@ from app.services.attachment_classifier import classify_attachment
 from app.services.rfq_validation import compare_revisions
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 
 # ─── Pydantic schemas ────────────────────────────────────────────────────────
@@ -198,7 +201,16 @@ async def list_rfqs(
     offset: int = 0,
     db: AsyncSession = Depends(get_db),
 ):
+    logger.info(
+        "rfq_list_requested status=%s client=%s priority=%s limit=%d offset=%d",
+        status,
+        client,
+        priority,
+        limit,
+        offset,
+    )
     q = select(RFQRecord).order_by(RFQRecord.created_at.desc())
+    q = q.options(selectinload(RFQRecord.attachments), selectinload(RFQRecord.line_items))
     if status:
         q = q.where(RFQRecord.status == status)
     if client:
@@ -208,11 +220,13 @@ async def list_rfqs(
     q = q.offset(offset).limit(limit)
     result = await db.execute(q)
     rfqs = result.scalars().all()
+    logger.info("rfq_list_completed count=%d", len(rfqs))
     return [_rfq_to_dict(r) for r in rfqs]
 
 
 @router.post("", status_code=status.HTTP_201_CREATED)
 async def create_rfq(body: RFQCreate, db: AsyncSession = Depends(get_db)):
+    logger.info("rfq_create_requested client=%s project=%s", body.client_name, body.project_name)
     rfq_number = f"RFQ-{datetime.utcnow().strftime('%Y%m%d')}-{str(uuid.uuid4())[:6].upper()}"
     rfq = RFQRecord(
         rfq_number=rfq_number,
@@ -222,13 +236,15 @@ async def create_rfq(body: RFQCreate, db: AsyncSession = Depends(get_db)):
     )
     db.add(rfq)
     await db.commit()
-    await db.refresh(rfq)
+    await db.refresh(rfq, attribute_names=["attachments", "line_items"])
+    logger.info("rfq_created rfq_id=%s rfq_number=%s", rfq.id, rfq.rfq_number)
     return _rfq_to_dict(rfq)
 
 
 @router.get("/stats")
 async def rfq_stats(db: AsyncSession = Depends(get_db)):
     """Pipeline stage counts for dashboard."""
+    logger.info("rfq_stats_requested")
     res = await db.execute(
         select(RFQRecord.status, func.count(RFQRecord.id))
         .group_by(RFQRecord.status)
@@ -242,7 +258,12 @@ async def rfq_stats(db: AsyncSession = Depends(get_db)):
 
 @router.get("/{rfq_id}")
 async def get_rfq(rfq_id: str, db: AsyncSession = Depends(get_db)):
-    res = await db.execute(select(RFQRecord).where(RFQRecord.id == rfq_id))
+    logger.info("rfq_detail_requested rfq_id=%s", rfq_id)
+    res = await db.execute(
+        select(RFQRecord)
+        .options(selectinload(RFQRecord.attachments), selectinload(RFQRecord.line_items))
+        .where(RFQRecord.id == rfq_id)
+    )
     rfq = res.scalar_one_or_none()
     if not rfq:
         raise HTTPException(404, "RFQ not found")
@@ -251,25 +272,34 @@ async def get_rfq(rfq_id: str, db: AsyncSession = Depends(get_db)):
 
 @router.put("/{rfq_id}")
 async def update_rfq(rfq_id: str, body: RFQUpdate, db: AsyncSession = Depends(get_db)):
-    res = await db.execute(select(RFQRecord).where(RFQRecord.id == rfq_id))
+    updates = body.model_dump(exclude_none=True)
+    logger.info("rfq_update_requested rfq_id=%s fields=%s", rfq_id, list(updates.keys()))
+    res = await db.execute(
+        select(RFQRecord)
+        .options(selectinload(RFQRecord.attachments), selectinload(RFQRecord.line_items))
+        .where(RFQRecord.id == rfq_id)
+    )
     rfq = res.scalar_one_or_none()
     if not rfq:
         raise HTTPException(404, "RFQ not found")
-    for field, val in body.model_dump(exclude_none=True).items():
+    for field, val in updates.items():
         setattr(rfq, field, val)
     await db.commit()
-    await db.refresh(rfq)
+    await db.refresh(rfq, attribute_names=["attachments", "line_items"])
+    logger.info("rfq_updated rfq_id=%s", rfq_id)
     return _rfq_to_dict(rfq)
 
 
 @router.delete("/{rfq_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_rfq(rfq_id: str, db: AsyncSession = Depends(get_db)):
+    logger.info("rfq_delete_requested rfq_id=%s", rfq_id)
     res = await db.execute(select(RFQRecord).where(RFQRecord.id == rfq_id))
     rfq = res.scalar_one_or_none()
     if not rfq:
         raise HTTPException(404, "RFQ not found")
     await db.delete(rfq)
     await db.commit()
+    logger.info("rfq_deleted rfq_id=%s", rfq_id)
 
 
 # ─── Attachments ─────────────────────────────────────────────────────────────
@@ -281,6 +311,7 @@ async def upload_attachment(
     file: UploadFile = File(...),
     db: AsyncSession = Depends(get_db),
 ):
+    logger.info("rfq_attachment_upload_requested rfq_id=%s filename=%s", rfq_id, file.filename)
     res = await db.execute(select(RFQRecord).where(RFQRecord.id == rfq_id))
     if not res.scalar_one_or_none():
         raise HTTPException(404, "RFQ not found")
@@ -289,11 +320,13 @@ async def upload_attachment(
     MAX_SIZE = 100 * 1024 * 1024
     content = await file.read()
     if len(content) > MAX_SIZE:
+        logger.warning("rfq_attachment_upload_rejected rfq_id=%s reason=file_too_large size=%d", rfq_id, len(content))
         raise HTTPException(400, "File too large (max 100 MB)")
 
     # Validate filename
     safe_name = Path(file.filename or "upload").name
     if not safe_name or safe_name.startswith("."):
+        logger.warning("rfq_attachment_upload_rejected rfq_id=%s reason=invalid_filename filename=%s", rfq_id, file.filename)
         raise HTTPException(400, "Invalid filename")
 
     stored_name = f"{uuid.uuid4()}_{safe_name}"
@@ -326,11 +359,19 @@ async def upload_attachment(
 
     await db.commit()
     await db.refresh(att)
+    logger.info(
+        "rfq_attachment_uploaded rfq_id=%s attachment_id=%s filename=%s size=%d",
+        rfq_id,
+        att.id,
+        safe_name,
+        len(content),
+    )
     return _attachment_to_dict(att)
 
 
 @router.get("/{rfq_id}/attachments")
 async def list_attachments(rfq_id: str, db: AsyncSession = Depends(get_db)):
+    logger.info("rfq_attachments_requested rfq_id=%s", rfq_id)
     res = await db.execute(
         select(RFQAttachment).where(RFQAttachment.rfq_id == rfq_id)
         .order_by(RFQAttachment.created_at)
@@ -342,6 +383,7 @@ async def list_attachments(rfq_id: str, db: AsyncSession = Depends(get_db)):
 async def reclassify_attachment(
     rfq_id: str, att_id: str, db: AsyncSession = Depends(get_db)
 ):
+    logger.info("rfq_attachment_reclassify_requested rfq_id=%s attachment_id=%s", rfq_id, att_id)
     res = await db.execute(
         select(RFQAttachment).where(
             RFQAttachment.id == att_id, RFQAttachment.rfq_id == rfq_id
@@ -373,6 +415,7 @@ async def reclassify_attachment(
 async def re_extract_attachment(
     rfq_id: str, att_id: str, db: AsyncSession = Depends(get_db)
 ):
+    logger.info("rfq_attachment_reextract_requested rfq_id=%s attachment_id=%s", rfq_id, att_id)
     res = await db.execute(
         select(RFQAttachment).where(
             RFQAttachment.id == att_id, RFQAttachment.rfq_id == rfq_id
@@ -391,6 +434,7 @@ async def re_extract_attachment(
 
 @router.get("/{rfq_id}/line-items")
 async def list_line_items(rfq_id: str, db: AsyncSession = Depends(get_db)):
+    logger.info("rfq_line_items_requested rfq_id=%s", rfq_id)
     res = await db.execute(
         select(RFQLineItem).where(RFQLineItem.rfq_id == rfq_id)
         .order_by(RFQLineItem.created_at)
@@ -402,6 +446,7 @@ async def list_line_items(rfq_id: str, db: AsyncSession = Depends(get_db)):
 async def update_line_item(
     rfq_id: str, item_id: str, body: LineItemUpdate, db: AsyncSession = Depends(get_db)
 ):
+    logger.info("rfq_line_item_update_requested rfq_id=%s item_id=%s", rfq_id, item_id)
     res = await db.execute(
         select(RFQLineItem).where(
             RFQLineItem.id == item_id, RFQLineItem.rfq_id == rfq_id
@@ -425,6 +470,7 @@ async def update_line_item(
 
 @router.delete("/{rfq_id}/line-items/{item_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_line_item(rfq_id: str, item_id: str, db: AsyncSession = Depends(get_db)):
+    logger.info("rfq_line_item_delete_requested rfq_id=%s item_id=%s", rfq_id, item_id)
     res = await db.execute(
         select(RFQLineItem).where(
             RFQLineItem.id == item_id, RFQLineItem.rfq_id == rfq_id
@@ -443,6 +489,7 @@ async def confirm_all_line_items(
     confirmed_by: str = "reviewer",
     db: AsyncSession = Depends(get_db),
 ):
+    logger.info("rfq_line_items_confirm_all_requested rfq_id=%s confirmed_by=%s", rfq_id, confirmed_by)
     res = await db.execute(
         select(RFQLineItem).where(
             RFQLineItem.rfq_id == rfq_id, RFQLineItem.is_confirmed == False
@@ -462,6 +509,7 @@ async def confirm_all_line_items(
 
 @router.post("/{rfq_id}/extract")
 async def trigger_extraction(rfq_id: str, db: AsyncSession = Depends(get_db)):
+    logger.info("rfq_extract_requested rfq_id=%s", rfq_id)
     res = await db.execute(select(RFQRecord).where(RFQRecord.id == rfq_id))
     rfq = res.scalar_one_or_none()
     if not rfq:
@@ -481,16 +529,19 @@ async def trigger_extraction(rfq_id: str, db: AsyncSession = Depends(get_db)):
     await enqueue(db, "validate_rfq", "rfq", rfq.id, priority=5)
     rfq.status = "extracting"
     await db.commit()
+    logger.info("rfq_extract_queued rfq_id=%s tasks_created=%d", rfq_id, tasks_created + 1)
     return {"status": "queued", "tasks_created": tasks_created + 1}
 
 
 @router.post("/{rfq_id}/validate")
 async def trigger_validation(rfq_id: str, db: AsyncSession = Depends(get_db)):
+    logger.info("rfq_validate_requested rfq_id=%s", rfq_id)
     res = await db.execute(select(RFQRecord).where(RFQRecord.id == rfq_id))
     if not res.scalar_one_or_none():
         raise HTTPException(404, "RFQ not found")
     task = await enqueue(db, "validate_rfq", "rfq", rfq_id, priority=2)
     await db.commit()
+    logger.info("rfq_validate_queued rfq_id=%s task_id=%s", rfq_id, task.id)
     return {"task_id": task.id, "status": "queued"}
 
 

@@ -153,7 +153,7 @@ class OpenAIProvider(AIProvider):
         try:
             return json.loads(content)
         except json.JSONDecodeError as e:
-            logger.warning(f"Strict JSON parse failed ({e}), attempting repair...")
+            logger.warning("openai_json_parse_strict_fail filename=<redacted> error=%s attempting_repair=True", e)
 
         try:
             repaired = repair_json(content, return_objects=True)
@@ -165,7 +165,7 @@ class OpenAIProvider(AIProvider):
                 return result
             raise ValueError(f"Repaired JSON is not a dict: {type(result)}")
         except Exception as repair_err:
-            logger.error(f"JSON repair also failed: {repair_err}")
+            logger.error("openai_json_repair_failed error=%s", repair_err, exc_info=True)
             raise json.JSONDecodeError(f"Could not parse or repair JSON: {repair_err}", content, 0)
 
     def _normalize_cover_letter_draft_data(
@@ -210,6 +210,7 @@ class OpenAIProvider(AIProvider):
         additional_context: Optional[str] = None
     ) -> ExtractedDataResponse:
         """Extract structured engineering data from document text."""
+        import time as _time
         text = file_bytes.decode("utf-8", errors="replace")
         context_note = f"\nAdditional context: {additional_context}" if additional_context else ""
         truncated_text = text[:DOCUMENT_TEXT_CHAR_LIMIT]
@@ -218,7 +219,11 @@ class OpenAIProvider(AIProvider):
             text=truncated_text,
             context=context_note
         )
-
+        logger.debug(
+            "openai_extract_document_start filename=%s text_len=%d model=%s",
+            filename, len(truncated_text), self.model,
+        )
+        _t0 = _time.perf_counter()
         response = await self._chat_completions_create(
             model=self.model,
             messages=[
@@ -229,7 +234,16 @@ class OpenAIProvider(AIProvider):
             max_completion_tokens=16000,
             response_format={"type": "json_object"},
         )
-
+        elapsed_ms = (_time.perf_counter() - _t0) * 1000
+        usage = response.usage
+        logger.info(
+            "openai_extract_document_ok filename=%s model=%s elapsed_ms=%.0f "
+            "prompt_tokens=%s completion_tokens=%s total_tokens=%s",
+            filename, self.model, elapsed_ms,
+            getattr(usage, "prompt_tokens", "?"),
+            getattr(usage, "completion_tokens", "?"),
+            getattr(usage, "total_tokens", "?"),
+        )
         content = response.choices[0].message.content
         data = self._parse_json_response(content)
         data["raw_text"] = text
@@ -271,6 +285,12 @@ class OpenAIProvider(AIProvider):
                 "image_url": {"url": f"data:{mime};base64,{b64_image}"}
             })
 
+        import time as _time
+        logger.debug(
+            "openai_extract_image_start filename=%s images=%d model=%s",
+            filename, len(image_list), self.model_vision,
+        )
+        _t0 = _time.perf_counter()
         response = await self._chat_completions_create(
             model=self.model_vision,
             messages=[
@@ -281,7 +301,15 @@ class OpenAIProvider(AIProvider):
             max_completion_tokens=8192,
             response_format={"type": "json_object"},
         )
-
+        elapsed_ms = (_time.perf_counter() - _t0) * 1000
+        usage = response.usage
+        logger.info(
+            "openai_extract_image_ok filename=%s model=%s images=%d elapsed_ms=%.0f "
+            "prompt_tokens=%s completion_tokens=%s",
+            filename, self.model_vision, len(image_list), elapsed_ms,
+            getattr(usage, "prompt_tokens", "?"),
+            getattr(usage, "completion_tokens", "?"),
+        )
         content = response.choices[0].message.content
         data = self._parse_json_response(content)
         data = _flatten_extraction(data)

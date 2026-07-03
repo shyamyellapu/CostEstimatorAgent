@@ -14,6 +14,7 @@ if not settings.database_url.startswith("postgresql+asyncpg://"):
     raise ValueError("DATABASE_URL must be PostgreSQL asyncpg URL")
 
 # PostgreSQL engine configuration
+# echo=False: SQL statement logging is handled by our logging_config (sqlalchemy.engine set to WARNING)
 engine_config = {
     "echo": False,
     "pool_size": settings.db_pool_size,

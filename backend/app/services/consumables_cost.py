@@ -6,6 +6,7 @@ Two supported modes:
 
 IMPROVED: Enhanced precision using Decimal arithmetic and comprehensive validation.
 """
+import logging
 from dataclasses import dataclass
 from enum import Enum
 from typing import Optional
@@ -15,6 +16,8 @@ from app.services.precision_utils import (
     to_decimal, round_cost, calculate_percentage,
     validate_positive, to_float, format_formula_value
 )
+
+logger = logging.getLogger(__name__)
 
 
 class ConsumableMode(str, Enum):

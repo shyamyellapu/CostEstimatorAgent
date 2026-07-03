@@ -3,6 +3,7 @@ Gmail API routes — OAuth2 flow, mailbox management, inbox, sync.
 """
 from __future__ import annotations
 
+import logging
 from typing import Any, Dict, List, Optional
 from datetime import datetime
 
@@ -23,6 +24,7 @@ from app.services.gmail_service import (
 from app.tasks.rfq_tasks import enqueue
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 
 # ─── Pydantic schemas ─────────────────────────────────────────────────────────
@@ -46,7 +48,9 @@ async def get_auth_url(
     state: Optional[str] = None,
 ):
     """Return the Gmail OAuth2 consent URL."""
+    logger.info("gmail_auth_url_requested redirect_uri=%s state_present=%s", redirect_uri, bool(state))
     if not settings.gmail_client_id or not settings.gmail_client_secret:
+        logger.error("gmail_auth_url_failed reason=oauth_not_configured")
         raise HTTPException(
             status.HTTP_503_SERVICE_UNAVAILABLE,
             "Gmail OAuth2 not configured. Set GMAIL_CLIENT_ID and GMAIL_CLIENT_SECRET.",
@@ -54,6 +58,7 @@ async def get_auth_url(
     try:
         auth_url, returned_state = get_authorization_url(redirect_uri, state)
     except Exception as exc:
+        logger.exception("gmail_auth_url_failed redirect_uri=%s", redirect_uri)
         raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, f"Failed to build OAuth URL: {exc}")
     return {"auth_url": auth_url, "state": returned_state}
 
@@ -63,10 +68,12 @@ async def oauth_callback(body: OAuthCallbackBody, db: AsyncSession = Depends(get
     """
     Exchange authorization code for tokens, store credential, return mailbox info.
     """
+    logger.info("gmail_oauth_callback_started redirect_uri=%s state_present=%s", body.redirect_uri, bool(body.state))
     try:
         creds_dict = exchange_code_for_credentials(body.code, body.redirect_uri)
         email_address = get_authenticated_email(creds_dict)
     except Exception as exc:
+        logger.exception("gmail_oauth_callback_failed redirect_uri=%s", body.redirect_uri)
         raise HTTPException(400, f"OAuth2 exchange failed: {exc}")
 
     svc = GmailSyncService(db)
@@ -76,6 +83,7 @@ async def oauth_callback(body: OAuthCallbackBody, db: AsyncSession = Depends(get
         display_name=email_address,
     )
     await db.commit()
+    logger.info("gmail_oauth_callback_completed mailbox_id=%s email=%s", cred.id, cred.email_address)
     return {
         "mailbox_id": cred.id,
         "email_address": cred.email_address,
@@ -87,6 +95,7 @@ async def oauth_callback(body: OAuthCallbackBody, db: AsyncSession = Depends(get
 
 @router.get("/mailboxes")
 async def list_mailboxes(db: AsyncSession = Depends(get_db)):
+    logger.info("gmail_mailboxes_list_requested")
     result = await db.execute(select(GmailCredential).order_by(GmailCredential.created_at))
     mailboxes = result.scalars().all()
     return [
@@ -104,6 +113,7 @@ async def list_mailboxes(db: AsyncSession = Depends(get_db)):
 
 @router.delete("/mailboxes/{mailbox_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def disconnect_mailbox(mailbox_id: str, db: AsyncSession = Depends(get_db)):
+    logger.info("gmail_mailbox_disconnect_requested mailbox_id=%s", mailbox_id)
     res = await db.execute(
         select(GmailCredential).where(GmailCredential.id == mailbox_id)
     )
@@ -113,11 +123,13 @@ async def disconnect_mailbox(mailbox_id: str, db: AsyncSession = Depends(get_db)
     cred.is_active = False
     cred.credentials_json = None   # revoke stored token
     await db.commit()
+    logger.info("gmail_mailbox_disconnected mailbox_id=%s email=%s", mailbox_id, cred.email_address)
 
 
 @router.post("/mailboxes/{mailbox_id}/reconnect")
 async def reconnect_mailbox(mailbox_id: str, db: AsyncSession = Depends(get_db)):
     """Re-enable a disconnected mailbox (credentials must still be valid)."""
+    logger.info("gmail_mailbox_reconnect_requested mailbox_id=%s", mailbox_id)
     res = await db.execute(
         select(GmailCredential).where(GmailCredential.id == mailbox_id)
     )
@@ -128,6 +140,7 @@ async def reconnect_mailbox(mailbox_id: str, db: AsyncSession = Depends(get_db))
         raise HTTPException(400, "No credentials stored. Re-authenticate via /auth-url.")
     cred.is_active = True
     await db.commit()
+    logger.info("gmail_mailbox_reconnected mailbox_id=%s email=%s", mailbox_id, cred.email_address)
     return {"status": "reconnected", "email_address": cred.email_address}
 
 
@@ -139,11 +152,17 @@ async def sync_gmail(body: SyncRequest, db: AsyncSession = Depends(get_db)):
     Sync one or all mailboxes.
     For each new RFQ-type email found, enqueue a process_email task.
     """
+    logger.info(
+        "gmail_sync_requested mailbox_id=%s max_messages=%d",
+        body.mailbox_id or "all",
+        body.max_messages,
+    )
     svc = GmailSyncService(db)
 
     if body.mailbox_id:
         mailbox = await svc.get_mailbox(body.mailbox_id)
         if not mailbox:
+            logger.warning("gmail_sync_mailbox_not_found mailbox_id=%s", body.mailbox_id)
             raise HTTPException(404, "Mailbox not found")
         counters = await svc.sync_mailbox(mailbox, max_messages=body.max_messages)
         if counters.get("needs_reauth"):
@@ -173,6 +192,13 @@ async def sync_gmail(body: SyncRequest, db: AsyncSession = Depends(get_db)):
         await enqueue(db, "process_email", "email", email.id, priority=2)
 
     await db.commit()
+    logger.info(
+        "gmail_sync_completed mailbox_id=%s mailboxes_synced=%d counters=%s process_tasks_queued=%d",
+        body.mailbox_id or "all",
+        mailboxes_synced,
+        counters,
+        len(emails),
+    )
 
     return {
         "mailboxes_synced": mailboxes_synced,
@@ -192,6 +218,13 @@ async def get_inbox(
     db: AsyncSession = Depends(get_db),
 ):
     """Paginated list of fetched emails."""
+    logger.info(
+        "gmail_inbox_requested email_type=%s is_processed=%s limit=%d offset=%d",
+        email_type,
+        is_processed,
+        limit,
+        offset,
+    )
     q = select(RFQEmail).order_by(RFQEmail.received_at.desc())
     if email_type:
         q = q.where(RFQEmail.email_type == email_type)
@@ -222,6 +255,7 @@ async def get_inbox(
 
 @router.get("/inbox/{email_id}")
 async def get_email_detail(email_id: str, db: AsyncSession = Depends(get_db)):
+    logger.info("gmail_email_detail_requested email_id=%s", email_id)
     res = await db.execute(select(RFQEmail).where(RFQEmail.id == email_id))
     email = res.scalar_one_or_none()
     if not email:
@@ -258,6 +292,7 @@ async def get_email_detail(email_id: str, db: AsyncSession = Depends(get_db)):
 @router.post("/inbox/{email_id}/process")
 async def process_email_manually(email_id: str, db: AsyncSession = Depends(get_db)):
     """Manually trigger RFQ creation from an email."""
+    logger.info("gmail_email_process_requested email_id=%s", email_id)
     res = await db.execute(select(RFQEmail).where(RFQEmail.id == email_id))
     email = res.scalar_one_or_none()
     if not email:
@@ -265,4 +300,5 @@ async def process_email_manually(email_id: str, db: AsyncSession = Depends(get_d
 
     task = await enqueue(db, "process_email", "email", email.id, priority=1)
     await db.commit()
+    logger.info("gmail_email_process_queued email_id=%s task_id=%s", email_id, task.id)
     return {"task_id": task.id, "status": "queued"}

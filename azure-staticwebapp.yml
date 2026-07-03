@@ -1,0 +1,32 @@
+trigger:
+- main
+
+pool:
+  vmImage: ubuntu-latest
+
+variables:
+- group: static-webapp
+
+steps:
+
+- task: NodeTool@0
+  inputs:
+    versionSpec: '20.x'
+  displayName: 'Use Node.js 20'
+
+- script: |
+    cd frontend
+    npm install
+  displayName: 'Install Frontend Dependencies'
+
+- script: |
+    cd frontend
+    npm run build
+  displayName: 'Build Frontend'
+
+- task: AzureStaticWebApp@0
+  inputs:
+    app_location: 'frontend'
+    output_location: 'dist'
+    azure_static_web_apps_api_token: $(AZURE_STATIC_WEB_APPS_API_TOKEN)
+  displayName: 'Deploy Static Web App'

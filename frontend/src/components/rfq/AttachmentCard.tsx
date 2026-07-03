@@ -138,17 +138,22 @@ export default function AttachmentCard({ attachment: att, rfqId, onUpdate }: Pro
 
       {/* Actions */}
       <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-        {att.storage_url && (
-          <a
-            href={att.storage_url}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="btn btn-secondary"
-            style={{ fontSize: 11, padding: '4px 10px', textDecoration: 'none' }}
-          >
-            <Eye size={12} /> View
-          </a>
-        )}
+        {att.storage_url && (() => {
+          const absoluteUrl = att.storage_url.startsWith('http')
+            ? att.storage_url
+            : att.storage_url
+          return (
+            <a
+              href={absoluteUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="btn btn-secondary"
+              style={{ fontSize: 11, padding: '4px 10px', textDecoration: 'none' }}
+            >
+              <Eye size={12} /> View
+            </a>
+          )
+        })()}
         <button
           className="btn btn-secondary"
           style={{ fontSize: 11, padding: '4px 10px' }}

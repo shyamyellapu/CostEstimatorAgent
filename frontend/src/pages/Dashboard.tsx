@@ -40,7 +40,7 @@ export default function Dashboard() {
 
   useEffect(() => {
     api.get('/estimate/jobs?limit=10')
-      .then(r => setJobs(r.data))
+      .then(r => setJobs(Array.isArray(r.data) ? r.data : []))
       .catch(() => setJobs([]))
       .finally(() => setLoading(false))
   }, [])

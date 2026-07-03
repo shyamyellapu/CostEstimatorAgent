@@ -4,8 +4,13 @@ Registers all routers and starts the database.
 """
 import logging
 from contextlib import asynccontextmanager
-from fastapi import FastAPI
+import logging
+import time
+import traceback
+
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pathlib import Path
 from sqlalchemy import text
@@ -44,6 +49,10 @@ logging.getLogger("watchfiles").setLevel(logging.WARNING)
 
 from app.config import settings
 from app.database import engine, Base, check_database_connection
+from app.logging_config import setup_logging
+
+setup_logging()
+logger = logging.getLogger(__name__)
 
 # Import all models so SQLAlchemy creates tables
 from app.models import job, uploaded_file, extracted_data, costing_sheet
@@ -62,14 +71,20 @@ from app.api.routes import gmail as gmail_routes
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Validate database connectivity and prepare runtime storage."""
+    logger.info("Starting Cost Estimator API")
     async with engine.connect() as conn:
         await conn.execute(text("SELECT 1"))
+    logger.info("Database connectivity verified")
+    """Create all DB tables on startup."""
+    # async with engine.begin() as conn:
+    #     await conn.run_sync(lambda conn: Base.metadata.create_all(conn, checkfirst=True))
 
     # Ensure local storage directories exist
     Path(settings.local_storage_path).mkdir(parents=True, exist_ok=True)
     (Path(settings.local_storage_path) / "uploads").mkdir(exist_ok=True)
     (Path(settings.local_storage_path) / "outputs").mkdir(exist_ok=True)
     (Path(settings.local_storage_path) / "rfq_uploads").mkdir(exist_ok=True)
+    logger.info("Storage directories ready at %s", settings.local_storage_path)
 
     # Start background task queue worker
     import asyncio
@@ -79,6 +94,11 @@ async def lifespan(app: FastAPI):
             poll_interval=settings.task_worker_poll_interval,
             max_concurrent=settings.task_worker_max_concurrent,
         )
+    )
+    logger.info(
+        "Task worker scheduled poll_interval=%.1fs max_concurrent=%d",
+        settings.task_worker_poll_interval,
+        settings.task_worker_max_concurrent,
     )
 
     yield
@@ -102,6 +122,75 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def log_requests(request: Request, call_next):
+    start = time.perf_counter()
+    client_ip = request.client.host if request.client else "unknown"
+    logger.debug(
+        "request_start method=%s path=%s client=%s",
+        request.method,
+        request.url.path,
+        client_ip,
+    )
+    try:
+        response = await call_next(request)
+    except Exception as exc:
+        duration_ms = (time.perf_counter() - start) * 1000
+        logger.error(
+            "request_unhandled_exception method=%s path=%s client=%s duration_ms=%.1f "
+            "exc_type=%s exc=%s\n%s",
+            request.method,
+            request.url.path,
+            client_ip,
+            duration_ms,
+            type(exc).__name__,
+            exc,
+            traceback.format_exc(),
+        )
+        raise
+
+    duration_ms = (time.perf_counter() - start) * 1000
+    # Log all 4xx/5xx as warnings/errors; log API routes at INFO; skip static/health noise
+    if response.status_code >= 500:
+        logger.error(
+            "request_server_error method=%s path=%s status=%d client=%s duration_ms=%.1f",
+            request.method, request.url.path, response.status_code, client_ip, duration_ms,
+        )
+    elif response.status_code >= 400:
+        logger.warning(
+            "request_client_error method=%s path=%s status=%d client=%s duration_ms=%.1f",
+            request.method, request.url.path, response.status_code, client_ip, duration_ms,
+        )
+    elif request.url.path.startswith("/api/") or request.url.path.startswith("/health"):
+        logger.info(
+            "request_complete method=%s path=%s status=%d client=%s duration_ms=%.1f",
+            request.method, request.url.path, response.status_code, client_ip, duration_ms,
+        )
+    else:
+        logger.debug(
+            "request_complete method=%s path=%s status=%d client=%s duration_ms=%.1f",
+            request.method, request.url.path, response.status_code, client_ip, duration_ms,
+        )
+    return response
+
+
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    """Catch-all for unhandled exceptions — log full traceback and return 500."""
+    logger.critical(
+        "unhandled_exception method=%s path=%s exc_type=%s exc=%s\n%s",
+        request.method,
+        request.url.path,
+        type(exc).__name__,
+        exc,
+        traceback.format_exc(),
+    )
+    return JSONResponse(
+        status_code=500,
+        content={"detail": "Internal server error. Please check server logs."},
+    )
 
 # API Routers
 app.include_router(estimate.router,       prefix="/api/estimate",      tags=["Estimate"])
