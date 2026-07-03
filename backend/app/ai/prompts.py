@@ -1036,7 +1036,13 @@ LLAMAPARSE_BOQ_EXTRACTION_PROMPT = """
 You are a structural fabrication cost estimator. Extract these 5 items from the BOQ/MTO document below.
 
 1. Total Structural Steel Material (kg) — labels: "Structural Steel", "Total Steel Weight", "Grand Total", "Mild Steel". Sum subtotals if needed.
-2. Handrails (kg) — labels: "Handrails", "Guardrail", "GALVANIZING WORK", "Balustrade". "Galvanizing Work" = handrails.
+2. Handrails (kg) — labels: "Handrails", "Guardrail", "GALVANIZING WORK", "Balustrade", "Railing", "Hand Rail". "Galvanizing Work" = handrails.
+   - If weight_kg is stated directly, use it.
+   - If only linear meters (m) and pipe size are given, calculate: weight_kg = linear_m × kg_per_m.
+     Standard pipe weights: 25NB=3.38, 32NB=4.05, 40NB=4.05, 42NB=5.41, 48NB=5.41, 50NB=5.44, 65NB=8.63 kg/m.
+     If pipe size is unknown, use 5.41 kg/m (42NB default for handrail top rail).
+     Set both weight_kg (calculated) and linear_m in the output.
+   - Sum all handrail/railing members (top rail + mid rail + posts/stanchions) if listed separately.
 3. Grating (kg or m²) — labels: "Grating", "Chequer Plate", "Floor Plate", "Open Mesh".
 4. M20×90 Bolts HEX HD Gr.8.8 BS 4190 (qty) — search "M20", "M20×90", "HEX HD", "Gr 8.8", "BS 4190". null if not found.
 5. Paint Material (litres) — use stated litres, else surface_area_m2 × 0.15, else steel_kg × 0.01538.

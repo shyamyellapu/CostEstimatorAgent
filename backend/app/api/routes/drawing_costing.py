@@ -296,13 +296,18 @@ async def analyse_drawing(
     # 2. Handrails
     hr = extracted.get("handrails") or {}
     hr_kg = float(hr.get("weight_kg") or 0)
+    hr_linear_m = float(hr.get("linear_m") or 0)
     hr_conf = float(hr.get("confidence") or 0.5)
-    if hr_kg > 0 or hr.get("linear_m"):
+    # Fallback: if LLM returned linear_m but no weight_kg, calculate using 42NB pipe default (5.41 kg/m)
+    if hr_kg == 0 and hr_linear_m > 0:
+        hr_kg = round(hr_linear_m * 5.41, 2)
+        logger.info("Handrail weight calculated from linear_m: %.1f m × 5.41 kg/m = %.1f kg", hr_linear_m, hr_kg)
+    if hr_kg > 0 or hr_linear_m > 0:
         _add_bom(
             description=f"Handrails — {hr.get('source_description', 'not stated')}",
             category="handrail",
             weight_kg=hr_kg or None,
-            qty=hr.get("linear_m"),
+            qty=hr_linear_m or None,
             confidence=hr_conf,
         )
 
@@ -330,13 +335,23 @@ async def analyse_drawing(
             confidence=0.9,
         )
     for ob in (bl.get("other_bolts") or []):
-        _add_bom(
-            description=ob.get("description") or f"{ob.get('size', 'Bolt')} Gr.{ob.get('grade', '8.8')}",
-            category="bolt",
-            weight_kg=None,
-            qty=float(ob.get("qty") or 0),
-            confidence=0.8,
-        )
+        # Handle both dict and string formats from LLM response
+        if isinstance(ob, dict):
+            desc = ob.get("description") or f"{ob.get('size', 'Bolt')} Gr.{ob.get('grade', '8.8')}"
+            qty = float(ob.get("qty") or 0)
+        else:
+            # LLM returned a simple string like "M16" or "M20"
+            desc = str(ob)
+            qty = 0  # No quantity specified
+        
+        if qty > 0:  # Only add if qty is specified
+            _add_bom(
+                description=desc,
+                category="bolt",
+                weight_kg=None,
+                qty=qty,
+                confidence=0.8,
+            )
 
     # 5. Paint Material
     pm = extracted.get("paint_material") or {}
