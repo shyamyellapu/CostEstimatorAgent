@@ -701,3 +701,141 @@ class MaterialMaster(Base):
         Index('idx_material_category_active', 'category', 'is_active'),
         Index('idx_material_grade', 'grade_standard', 'grade_code'),
     )
+
+
+# ─── Drawing Workflow Models ──────────────────────────────────────────────────
+
+class DrawingPage(Base):
+    """One page extracted from an uploaded drawing PDF."""
+    __tablename__ = "drawing_pages"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=gen_uuid)
+    job_id: Mapped[str] = mapped_column(String(36), ForeignKey("jobs.id", ondelete="CASCADE"), index=True)
+    file_id: Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("uploaded_files.id", ondelete="CASCADE"), nullable=True, index=True)
+    page_no: Mapped[int] = mapped_column(Integer)
+    page_type: Mapped[Optional[str]] = mapped_column(String(80), index=True)
+    page_storage_path: Mapped[Optional[str]] = mapped_column(String(1000))
+    image_storage_path: Mapped[Optional[str]] = mapped_column(String(1000))
+    extracted_text: Mapped[Optional[str]] = mapped_column(Text)
+    classification_confidence: Mapped[Optional[float]] = mapped_column(Float)
+    processing_status: Mapped[str] = mapped_column(String(50), default="pending", index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[Optional[datetime]] = mapped_column(DateTime, onupdate=datetime.utcnow)
+
+    __table_args__ = (
+        Index('idx_drawing_page_job_type', 'job_id', 'page_type'),
+        Index('idx_drawing_page_status', 'job_id', 'processing_status'),
+    )
+
+
+class BomItem(Base):
+    """A single row extracted from a BOM / MTO / material schedule page."""
+    __tablename__ = "bom_items"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=gen_uuid)
+    job_id: Mapped[str] = mapped_column(String(36), ForeignKey("jobs.id", ondelete="CASCADE"), index=True)
+    file_id: Mapped[Optional[str]] = mapped_column(String(36), nullable=True)
+    page_no: Mapped[Optional[int]] = mapped_column(Integer)
+    item_no: Mapped[Optional[str]] = mapped_column(String(50))
+    description: Mapped[Optional[str]] = mapped_column(String(500))
+    category: Mapped[Optional[str]] = mapped_column(String(100), index=True)
+    section_type: Mapped[Optional[str]] = mapped_column(String(100))
+    section_size: Mapped[Optional[str]] = mapped_column(String(100))
+    qty: Mapped[Optional[float]] = mapped_column(Float)
+    length_mm: Mapped[Optional[float]] = mapped_column(Float)
+    width_mm: Mapped[Optional[float]] = mapped_column(Float)
+    thickness_mm: Mapped[Optional[float]] = mapped_column(Float)
+    diameter_mm: Mapped[Optional[float]] = mapped_column(Float)
+    unit_weight_kg: Mapped[Optional[float]] = mapped_column(Float)
+    total_weight_kg: Mapped[Optional[float]] = mapped_column(Float)
+    material_grade: Mapped[Optional[str]] = mapped_column(String(100))
+    remarks: Mapped[Optional[str]] = mapped_column(String(500))
+    confidence: Mapped[Optional[float]] = mapped_column(Float)
+    source_json: Mapped[Optional[dict]] = mapped_column(json_type())
+    review_required: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    is_approved: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+    __table_args__ = (
+        Index('idx_bom_item_job_category', 'job_id', 'category'),
+        Index('idx_bom_item_review', 'job_id', 'review_required'),
+    )
+
+
+class DrawingComponent(Base):
+    """A structural/mechanical component extracted from non-BOM drawing pages."""
+    __tablename__ = "drawing_components"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=gen_uuid)
+    job_id: Mapped[str] = mapped_column(String(36), ForeignKey("jobs.id", ondelete="CASCADE"), index=True)
+    file_id: Mapped[Optional[str]] = mapped_column(String(36), nullable=True)
+    page_no: Mapped[Optional[int]] = mapped_column(Integer)
+    component_type: Mapped[Optional[str]] = mapped_column(String(100), index=True)
+    component_name: Mapped[Optional[str]] = mapped_column(String(255))
+    description: Mapped[Optional[str]] = mapped_column(String(500))
+    section_type: Mapped[Optional[str]] = mapped_column(String(100))
+    section_size: Mapped[Optional[str]] = mapped_column(String(100))
+    qty: Mapped[Optional[float]] = mapped_column(Float)
+    length_mm: Mapped[Optional[float]] = mapped_column(Float)
+    width_mm: Mapped[Optional[float]] = mapped_column(Float)
+    thickness_mm: Mapped[Optional[float]] = mapped_column(Float)
+    diameter_mm: Mapped[Optional[float]] = mapped_column(Float)
+    pipe_schedule: Mapped[Optional[str]] = mapped_column(String(50))
+    material_grade: Mapped[Optional[str]] = mapped_column(String(100))
+    surface_treatment: Mapped[Optional[str]] = mapped_column(String(200))
+    confidence: Mapped[Optional[float]] = mapped_column(Float)
+    source_json: Mapped[Optional[dict]] = mapped_column(json_type())
+    review_required: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    is_approved: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+    __table_args__ = (
+        Index('idx_drawing_comp_job_type', 'job_id', 'component_type'),
+        Index('idx_drawing_comp_review', 'job_id', 'review_required'),
+    )
+
+
+class QuantityResult(Base):
+    """Final aggregated quantities calculated by the Python quantity engine."""
+    __tablename__ = "quantity_results"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=gen_uuid)
+    job_id: Mapped[str] = mapped_column(String(36), ForeignKey("jobs.id", ondelete="CASCADE"), index=True)
+    category: Mapped[str] = mapped_column(String(100), index=True)
+    quantity_unit: Mapped[Optional[str]] = mapped_column(String(50))
+    quantity_value: Mapped[Optional[float]] = mapped_column(Float)
+    weight_kg: Mapped[Optional[float]] = mapped_column(Float)
+    area_m2: Mapped[Optional[float]] = mapped_column(Float)
+    linear_meter: Mapped[Optional[float]] = mapped_column(Float)
+    source: Mapped[Optional[str]] = mapped_column(String(50))        # bom | calculated | ratio_based
+    calculation_method: Mapped[Optional[str]] = mapped_column(String(200))
+    confidence: Mapped[Optional[float]] = mapped_column(Float)
+    is_approved: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+    __table_args__ = (
+        Index('idx_qty_result_job_category', 'job_id', 'category'),
+    )
+
+
+class CostingValidationResult(Base):
+    """Result of each validation check run by the validation engine."""
+    __tablename__ = "costing_validation_results"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=gen_uuid)
+    job_id: Mapped[str] = mapped_column(String(36), ForeignKey("jobs.id", ondelete="CASCADE"), index=True)
+    severity: Mapped[str] = mapped_column(String(20), index=True)          # PASS | REVIEW_RECOMMENDED | REVIEW_REQUIRED | FAILED
+    validation_type: Mapped[str] = mapped_column(String(100))
+    message: Mapped[str] = mapped_column(String(1000))
+    source_page: Mapped[Optional[int]] = mapped_column(Integer)
+    source_item_id: Mapped[Optional[str]] = mapped_column(String(36))
+    expected_value: Mapped[Optional[float]] = mapped_column(Float)
+    actual_value: Mapped[Optional[float]] = mapped_column(Float)
+    difference_percent: Mapped[Optional[float]] = mapped_column(Float)
+    status: Mapped[str] = mapped_column(String(20), default="open", index=True)   # open | resolved | ignored
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+    __table_args__ = (
+        Index('idx_val_result_job_severity', 'job_id', 'severity'),
+        Index('idx_val_result_status', 'job_id', 'status'),
+    )

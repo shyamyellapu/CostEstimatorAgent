@@ -191,16 +191,51 @@ SECTION_WEIGHTS: Dict[str, float] = {
     "L 65×50×6": 5.13,
     "L 60×40×6": 4.48,
     
-    # Tees cut from UC (UCT - approximate as half of parent UC)
-    "UCT 152×152×30": 15.0,
-    "UCT 152×152×23": 11.5,
-    "UCT 203×203×46": 23.0,
-    "UCT 203×203×52": 26.0,
-    
+    # UCT weight = parent UC weight / 2 (T-section cut from UC web centreline)
+    # UBT weight = parent UB weight / 2 (T-section cut from UB web centreline)
+    # Source: SCI Blue Book. Verified against C&J calibration job CNJ-142676
+    # (authoritative weight: 7802.27 kg). DO NOT change without re-verifying.
+    # Entries use BOTH naming conventions: actual-tee-weight suffix AND parent-weight suffix.
+    "UCT 152×152×15":  15.0,  "UCT 152×152×30":  15.0,
+    "UCT 152×152×11.5":11.5,  "UCT 152×152×23":  11.5,
+    "UCT 152×152×18.5":18.5,
+    "UCT 203×203×23":  23.0,  "UCT 203×203×46":  23.0,
+    "UCT 203×203×26":  26.0,  "UCT 203×203×52":  26.0,
+    "UCT 203×203×30":  30.0,  "UCT 203×203×60":  30.0,
+    "UCT 203×203×35.5":35.5,  "UCT 203×203×71":  35.5,
+    "UCT 203×203×43":  43.0,  "UCT 203×203×86":  43.0,
+    "UCT 254×254×36.5":36.5,  "UCT 254×254×73":  36.5,
+    "UCT 254×254×44.5":44.5,  "UCT 254×254×89":  44.5,
+    "UCT 254×254×53.5":53.5,  "UCT 254×254×107": 53.5,
+    "UCT 305×305×48.5":48.5,  "UCT 305×305×97":  48.5,
+    "UCT 305×305×59":  59.0,  "UCT 305×305×118": 59.0,
+    "UCT 305×305×68.5":68.5,  "UCT 305×305×137": 68.5,
+    "UCT 305×305×79":  79.0,  "UCT 305×305×158": 79.0,
+    "UCT 356×368×64.5":64.5,  "UCT 356×368×129": 64.5,
+    "UCT 356×368×76.5":76.5,  "UCT 356×368×153": 76.5,
+    "UCT 356×368×88.5":88.5,  "UCT 356×368×177": 88.5,
+
     # Tees cut from UB (UBT - approximate as half of parent UB)
-    "UBT 203×133×30": 15.0,
-    "UBT 203×133×25": 12.5,
-    "UBT 133×101×15": 14.9,
+    "UBT 127×76×6.5":  6.5,   "UBT 127×76×13":   6.5,
+    "UBT 152×89×8":    8.0,   "UBT 152×89×16":   8.0,
+    "UBT 178×102×9.5": 9.5,   "UBT 178×102×19":  9.5,
+    "UBT 203×102×11.5":11.5,  "UBT 203×102×23":  11.5,
+    "UBT 254×102×12.5":12.5,  "UBT 254×102×25":  12.5,
+    "UBT 254×102×14":  14.0,  "UBT 254×102×28":  14.0,
+    "UBT 254×146×15.5":15.5,  "UBT 254×146×31":  15.5,
+    "UBT 254×146×18.5":18.5,  "UBT 254×146×37":  18.5,
+    "UBT 305×102×14":  14.0,  "UBT 305×102×28":  14.0,
+    "UBT 305×127×18.5":18.5,  "UBT 305×127×37":  18.5,
+    "UBT 305×165×20":  20.0,  "UBT 305×165×40":  20.0,
+    "UBT 305×165×23":  23.0,  "UBT 305×165×46":  23.0,
+    "UBT 356×127×16.5":16.5,  "UBT 356×127×33":  16.5,
+    "UBT 356×171×22.5":22.5,  "UBT 356×171×45":  22.5,
+    "UBT 356×171×25.5":25.5,  "UBT 356×171×51":  25.5,
+    "UBT 406×140×19.5":19.5,  "UBT 406×140×39":  19.5,
+    "UBT 406×178×27":  27.0,  "UBT 406×178×54":  27.0,
+    "UBT 457×152×26":  26.0,  "UBT 457×152×52":  26.0,
+    "UBT 457×191×33.5":33.5,  "UBT 457×191×67":  33.5,
+    "UBT 533×210×41":  41.0,  "UBT 533×210×82":  41.0,
     
     # Rectangular Hollow Sections (RHS) - common sizes
     "RHS 400×200×12.5": 115.0,
@@ -395,3 +430,17 @@ def calculate_plate_weight(
     """
     volume_m3 = (length_mm / 1000.0) * (width_mm / 1000.0) * (thickness_mm / 1000.0)
     return volume_m3 * density_kg_m3 * quantity
+
+
+# ---------------------------------------------------------------------------
+# Aliases used by the quantity engine
+# ---------------------------------------------------------------------------
+
+def get_section_weight(designation: str) -> Optional[float]:
+    """Alias for get_section_unit_weight — used by quantity_engine."""
+    return get_section_unit_weight(designation)
+
+
+def normalize_section_name(designation: str) -> str:
+    """Alias for normalize_section_designation — used by quantity_engine."""
+    return normalize_section_designation(designation)

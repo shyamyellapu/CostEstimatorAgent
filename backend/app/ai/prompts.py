@@ -61,8 +61,21 @@ STANDARD STEEL SECTION UNIT WEIGHTS (kg/m) — USE THESE EXCLUSIVELY:
   UB 356×171×51   =  51.0 kg/m       UB 406×178×67   =  67.1 kg/m
   PFC 100×50×10   =  10.2 kg/m       PFC 150×90×24   =  24.0 kg/m
   PFC 180×90×26   =  26.1 kg/m       PFC 230×90×32   =  32.2 kg/m
-  UCT 152×152×30  =  15.0 kg/m  (= UC/2)
-  UBT 133×101×15  =  14.9 kg/m  (= UB/2)
+  UCT 152×152×15  =  15.0 kg/m  UCT 152×152×11.5 =  11.5 kg/m  UCT 152×152×18.5 =  18.5 kg/m
+  UCT 203×203×23  =  23.0 kg/m  UCT 203×203×26   =  26.0 kg/m  UCT 203×203×30   =  30.0 kg/m
+  UCT 203×203×35.5=  35.5 kg/m  UCT 203×203×43   =  43.0 kg/m  UCT 203×203×46   =  23.0 kg/m
+  UCT 203×203×52  =  26.0 kg/m  UCT 254×254×73   =  36.5 kg/m  UCT 254×254×89   =  44.5 kg/m
+  UCT 254×254×107 =  53.5 kg/m  UCT 305×305×97   =  48.5 kg/m  UCT 305×305×118  =  59.0 kg/m
+  UCT 305×305×137 =  68.5 kg/m  UCT 305×305×158  =  79.0 kg/m  UCT 356×368×129  =  64.5 kg/m
+  UCT 356×368×153 =  76.5 kg/m  UCT 356×368×177  =  88.5 kg/m
+  UBT 127×76×13   =   6.5 kg/m  UBT 152×89×16    =   8.0 kg/m  UBT 178×102×19   =   9.5 kg/m
+  UBT 203×102×23  =  11.5 kg/m  UBT 254×102×25   =  12.5 kg/m  UBT 254×102×28   =  14.0 kg/m
+  UBT 254×146×31  =  15.5 kg/m  UBT 254×146×37   =  18.5 kg/m  UBT 305×102×28   =  14.0 kg/m
+  UBT 305×127×37  =  18.5 kg/m  UBT 305×165×40   =  20.0 kg/m  UBT 305×165×46   =  23.0 kg/m
+  UBT 356×127×33  =  16.5 kg/m  UBT 356×171×45   =  22.5 kg/m  UBT 356×171×51   =  25.5 kg/m
+  UBT 406×140×39  =  19.5 kg/m  UBT 406×178×54   =  27.0 kg/m  UBT 457×152×52   =  26.0 kg/m
+  UBT 457×191×67  =  33.5 kg/m  UBT 533×210×82   =  41.0 kg/m
+  (UCT = UC parent weight / 2; UBT = UB parent weight / 2 — SCI Blue Book)
   L  65×65×8      =   7.73 kg/m      L  75×75×8      =   8.99 kg/m
   L  90×90×10     =  13.4  kg/m      L 100×100×10    =  15.1  kg/m
   L 100×100×12    =  18.2  kg/m      L 120×120×12    =  22.1  kg/m
@@ -386,7 +399,10 @@ STANDARD UNIT WEIGHTS (kg/m) — MANDATORY:
   UC 152×152×30 = 30.0    UC 152×152×23 = 23.0    UC 203×203×46 = 46.1
   UB 203×133×25 = 25.1    UB 203×133×30 = 29.7    UB 305×127×48 = 48.1
   PFC 150×90×24 = 24.0    PFC 100×50×10 = 10.2
-  UCT 152×152×30 = 15.0   UBT 133×101×15 = 14.9
+  UCT 152×152×15 = 15.0   UCT 152×152×11.5 = 11.5  UCT 203×203×23 = 23.0   UCT 203×203×46 = 23.0
+  UCT 254×254×73 = 36.5   UCT 305×305×97 = 48.5
+  UBT 127×76×13 = 6.5     UBT 152×89×16 = 8.0     UBT 178×102×19 = 9.5    UBT 203×102×23 = 11.5
+  UBT 254×102×25 = 12.5   UBT 254×146×31 = 15.5   UBT 305×165×40 = 20.0   UBT 457×191×67 = 33.5
   L 100×100×10 = 15.1     L 100×100×12 = 18.2     L 75×75×8 = 8.99
   L 90×90×10 = 13.4       L 65×65×8 = 7.73
   FB 150×10 = 11.8        FB 200×12 = 18.8
@@ -1013,313 +1029,21 @@ Return exactly this structure:
 
 
 # =============================================================================
-# 9. COSTING CALCULATION PROMPT — NEW in v2.0
-# =============================================================================
-# This prompt is SEPARATE from drawing extraction.
-# It receives the drawing extraction JSON and job metadata,
-# then applies the C&J rate card and calculation sequence.
-# Using a separate prompt prevents the model from mixing
-# extraction logic with financial calculation logic.
+# BOQ EXTRACTION PROMPT — used by drawing_costing route after LlamaParse
 # =============================================================================
 
-COSTING_CALCULATION_PROMPT = f"""
-You are the cost calculation engine for C&J Gulf Equipment Manufacturing LLC.
-You receive structured drawing extraction data and job metadata.
-You apply the C&J master rate card to produce a complete job costing sheet.
+LLAMAPARSE_BOQ_EXTRACTION_PROMPT = """
+You are a structural fabrication cost estimator. Extract these 5 items from the BOQ/MTO document below.
 
-YOU MUST NOT:
-  • Invent quantities not present in the drawing extraction data
-  • Use any rates other than the C&J Master Rate Card below
-  • Skip any calculation step in the 10-step sequence
-  • Output a costing sheet if steel_total_kg = 0 (flag as ERROR instead)
+1. Total Structural Steel Material (kg) — labels: "Structural Steel", "Total Steel Weight", "Grand Total", "Mild Steel". Sum subtotals if needed.
+2. Handrails (kg) — labels: "Handrails", "Guardrail", "GALVANIZING WORK", "Balustrade". "Galvanizing Work" = handrails.
+3. Grating (kg or m²) — labels: "Grating", "Chequer Plate", "Floor Plate", "Open Mesh".
+4. M20×90 Bolts HEX HD Gr.8.8 BS 4190 (qty) — search "M20", "M20×90", "HEX HD", "Gr 8.8", "BS 4190". null if not found.
+5. Paint Material (litres) — use stated litres, else surface_area_m2 × 0.15, else steel_kg × 0.01538.
 
-════════════════════════════════════════════════════
-C&J MASTER RATE CARD
-════════════════════════════════════════════════════
-{CJ_RATE_CARD}
+DOCUMENT:
+{text}
 
-════════════════════════════════════════════════════
-10-STEP CALCULATION SEQUENCE — FOLLOW EXACTLY
-════════════════════════════════════════════════════
-Input: steel_kg = drawing_data.weight_summary.total_kg
-
-STEP 1 — MATERIAL: STRUCTURAL STEEL
-  steel_cost = steel_kg × 4.00
-
-STEP 2 — MATERIAL: BOLTS
-  bolt_qty  = sum of all bolts_and_plates[qty]
-  bolt_cost = bolt_qty × 12.50   (M20×90 Gr8.8 default)
-  Note: use 8.50/nos for M16 if bolt size is M16
-
-STEP 3 — MATERIAL: PAINT
-  paint_litres    = steel_kg × 0.01538
-  paint_mat_cost  = paint_litres × 21.00
-
-STEP 4 — LABOUR: WELDING
-  welding_hrs  = steel_kg × 0.02051
-  welding_cost = welding_hrs × 10.50
-
-STEP 5 — LABOUR: FABRICATION
-  fab_hrs  = steel_kg × 0.04102
-  fab_cost = fab_hrs × 9.50
-
-STEP 6 — SURFACE: BLASTING & PAINTING
-  surface_sqm   = steel_kg × 0.02563
-  blast_cost    = surface_sqm × 9.00
-  painting_cost = surface_sqm × 11.00
-
-STEP 7 — CONSUMABLES
-  consumables_cost = steel_kg × 0.6855
-
-STEP 8 — INSPECTION (MPI/DPT 10%)
-  mpi_visits = max(1, round(steel_kg / 800))
-  mpi_cost   = mpi_visits × 600.00
-
-STEP 9 — FIXED COSTS
-  qaqc_cost    = 3000.00
-  packing_cost = 3000.00
-
-STEP 10 — FINANCIAL TOTALS
-  direct_total  = sum of steps 1–9
-  overhead      = direct_total × 0.327
-  grand_total   = direct_total + overhead
-  selling_price = grand_total / (1 - 0.254)
-  net_profit    = selling_price - grand_total
-  profit_pct    = (net_profit / selling_price) × 100
-
-════════════════════════════════════════════════════
-VALIDATION BEFORE OUTPUT
-════════════════════════════════════════════════════
-[ ] steel_kg > 0         (if zero → ERROR, do not produce costing)
-[ ] steel_cost > 0
-[ ] overhead = direct_total × 0.327   (verify arithmetic)
-[ ] grand_total = direct_total + overhead
-[ ] selling_price > grand_total
-[ ] all monetary values rounded to 2 decimal places
-[ ] all hours rounded to 2 decimal places
-
-Return JSON (no preamble):
-{{
-  "header": {{
-    "ref_no": "",
-    "customer_name": "",
-    "enquiry_no": "",
-    "attention_of": "",
-    "contact_no": "",
-    "email": "",
-    "date": "",
-    "job_no": "",
-    "project_package": "MODULE WORK"
-  }},
-  "line_items": [
-    {{
-      "sr_no": "5.1",
-      "description": "Structural Steel Material",
-      "qty": 0.0,
-      "unit": "Kg",
-      "manhours": null,
-      "unit_cost": 4.00,
-      "total_cost": 0.0,
-      "remarks": ""
-    }}
-  ],
-  "totals": {{
-    "direct_cost_total": 0.0,
-    "overhead_pct": 32.7,
-    "overhead_value": 0.0,
-    "grand_total": 0.0,
-    "selling_price": 0.0,
-    "net_profit": 0.0,
-    "net_profit_pct": 0.0
-  }},
-  "signatories": {{
-    "estimation_engineer": "Sachin Ahire",
-    "planning_engineer":   "Sachin Ahire",
-    "manager":             "Subash Valrani",
-    "accountant":          "Zeeshan"
-  }},
-  "audit_trail": {{
-    "input_steel_kg":         0.0,
-    "input_bolt_qty":         0,
-    "surface_sqm":            0.0,
-    "welding_hrs":            0.0,
-    "fabrication_hrs":        0.0,
-    "mpi_visits":             0,
-    "paint_litres":           0.0,
-    "consumables_aed":        0.0,
-    "calculation_steps": [
-      {{"step": 1, "name": "Structural Steel", "formula": "steel_kg × 4.00", "result": 0.0}},
-      {{"step": 2, "name": "Bolts",            "formula": "bolt_qty × 12.50", "result": 0.0}},
-      {{"step": 3, "name": "Paint Material",   "formula": "steel_kg × 0.01538 × 21.00", "result": 0.0}},
-      {{"step": 4, "name": "Welding Labour",   "formula": "steel_kg × 0.02051 × 10.50", "result": 0.0}},
-      {{"step": 5, "name": "Fab Labour",       "formula": "steel_kg × 0.04102 × 9.50", "result": 0.0}},
-      {{"step": 6, "name": "Blasting+Painting","formula": "steel_kg × 0.02563 × (9+11)", "result": 0.0}},
-      {{"step": 7, "name": "Consumables",      "formula": "steel_kg × 0.6855", "result": 0.0}},
-      {{"step": 8, "name": "MPI/DPT",          "formula": "visits × 600", "result": 0.0}},
-      {{"step": 9, "name": "Fixed Costs",      "formula": "3000 + 3000", "result": 6000.0}},
-      {{"step": 10,"name": "Financials",       "formula": "overhead 32.7% + margin 25.4%", "result": 0.0}}
-    ]
-  }},
-  "validation": {{
-    "steel_kg_non_zero":     true,
-    "overhead_check_ok":     true,
-    "selling_price_ok":      true,
-    "arithmetic_verified":   true,
-    "status": "OK | ERROR: reason"
-  }}
-}}
-"""
-
-
-# =============================================================================
-# 10. GROQ MODEL CONFIGURATION — recommended models per task (April 2026)
-# =============================================================================
-
-GROQ_MODEL_CONFIG = {
-    # Drawing Reader — best JSON extraction + 131K context
-    # qwen3-32b replaced mistral-saba & qwq-32b as Groq's recommended model
-    "drawing_reader": {
-        "model":       "qwen/qwen3-32b",
-        "temperature": 0.1,
-        "max_tokens":  4000,
-        "response_format": {"type": "json_object"},
-    },
-
-    # Job Costing — best math/reasoning on Groq free tier
-    # gpt-oss-120b is Groq's top reasoning model as of April 2026
-    "job_costing": {
-        "model":       "openai/gpt-oss-120b",
-        "temperature": 0.0,
-        "max_tokens":  3000,
-        "response_format": {"type": "json_object"},
-    },
-
-    # Cover Letter — best formal prose on Groq
-    "cover_letter": {
-        "model":       "llama-3.3-70b-versatile",
-        "temperature": 0.3,
-        "max_tokens":  2500,
-        "response_format": {"type": "json_object"},
-    },
-
-    # Document/BOQ text extraction
-    "document_extraction": {
-        "model":       "qwen/qwen3-32b",
-        "temperature": 0.1,
-        "max_tokens":  4000,
-        "response_format": {"type": "json_object"},
-    },
-
-    # Quotation parsing
-    "quotation_parse": {
-        "model":       "llama-3.3-70b-versatile",
-        "temperature": 0.1,
-        "max_tokens":  2000,
-        "response_format": {"type": "json_object"},
-    },
-
-    # Fallback for any rate-limited model
-    "fallback": {
-        "model":       "llama-3.3-70b-versatile",
-        "temperature": 0.1,
-        "max_tokens":  4000,
-    },
-}
-
-# For Qwen3 tasks that benefit from chain-of-thought:
-# Prepend /think to the user message to activate thinking mode.
-# This is especially effective for costing calculations if gpt-oss-120b
-# is rate-limited and you fall back to qwen3-32b.
-QWEN3_THINK_PREFIX = "/think\n\n"
-
-
-# =============================================================================
-# CHANGE LOG vs v1.0
-# =============================================================================
-CHANGE_LOG = """
-v2.0  April 2026
-─────────────────────────────────────────────────────────────────
-SYSTEM_PROMPT_ENGINEER:
-  + Added explicit multi-sheet mandate and section-type vocabulary
-  + Added SECTION_WEIGHT_TABLE reference (shared constant)
-  + Added tag identity rule
-
-DOCUMENT_EXTRACTION_PROMPT:
-  + Added PRE-EXTRACTION CHECKLIST (Sheet A/B/C guards)
-  + Added total_sheets_in_drawing + sheets_provided + sheets_processed
-    to drawing_metadata so the caller can detect partial inputs
-  + Added completeness_check block (mirrors IMAGE prompt)
-  + Removed duplicate schema — was defined twice in v1.0
-  + Added is_existing and revision_cloud fields
-  + Added overall_confidence and summary at root level
-
-IMAGE_EXTRACTION_PROMPT (largest change — was root cause of 13% recall):
-  + Added mandatory 5-pass extraction process before JSON output
-  + Pass 2 (global tag enumeration) forces model to list ALL tags
-    before populating the JSON array — prevents early-stopping
-  + Pass 4 (section-type completeness scan) requires checking each
-    section family independently — prevents UC-only extraction
-  + Pass 5 (internal completeness gate) forces self-verification
-    before writing JSON
-  + Added per-section surface area calculation formulas
-  + Added TYP handling with explicit count resolution rules
-  + Added EXISTING member handling and REF dimension rules
-  + Added revision cloud handling
-  + Added weld extraction details with hours formula
-  + Added bolt aggregation rules and "set" definition
-  + Added completeness_check.tags_enumerated_pass2 field so caller
-    can verify tag recall independently
-  + Fixed: removed incorrect second "UB" entry in section type list
-
-BOQ_PARSE_PROMPT:
-  + Added weight calculation formulas per section type
-  + Added bolt_summary aggregation section
-  + Added weight_summary at output root
-  + Added confidence scoring rules
-  + Added section designation normalization examples
-
-QUOTATION_PARSE_PROMPT:
-  + Added payment_terms decomposition into 3 mandatory sub-fields
-  + Added free_issue_materials field (feeds cover letter prerequisites)
-  + Added enquiry_number, work_order_number, project_package_type
-  + Added flags[] for missing mandatory fields
-  + Improved contact_salutation derivation rules
-
-COVER_LETTER_DRAFT_PROMPT:
-  + Added 8 mandatory formatting rules (paragraph-only, no bullets)
-  + Payment terms rule: MUST state all 3 sub-fields explicitly
-    (credit days + invoice requirement + submission location)
-  + Prerequisites rule: MUST include Free-Issue materials (4th item)
-  + Added warranty (12 months) as mandatory sub-section
-  + Added liability cap as mandatory sub-section
-  + Added validation object in output to allow automated QA checking
-  + Removed bullet-point formatting from exclusions list
-  + Capped introduction at 2 sentences (was producing 4+ sentences)
-
-DRAWING_READER_SYSTEM_PROMPT:
-  + Added COMMON FAILURE MODE TO AVOID section (explicit anti-pattern)
-  + Added SECTION_WEIGHT_TABLE constant
-  + Added tags_enumerated_pass2 and tags_match to completeness_check
-  + Added is_existing, unit_weight_kg_per_m, weld_size_mm,
-    weld_length_per_joint_mm, surface_area_m2 fields to structural_elements
-  + Changed status to "COMPLETE | INCOMPLETE — reason" format
-
-NEW — COSTING_CALCULATION_PROMPT:
-  + Fully separate from extraction prompts (prevents mixing concerns)
-  + C&J master rate card embedded with all 14 rates + 5 derived factors
-  + 10-step calculation sequence with explicit formulas
-  + Validation gate before output (rejects zero-steel inputs)
-  + audit_trail.calculation_steps provides full transparency
-  + Feeds directly into the existing costing sheet Excel structure
-
-NEW — GROQ_MODEL_CONFIG:
-  + qwen/qwen3-32b for extraction (replaced mixtral + mistral-saba)
-  + openai/gpt-oss-120b for costing (Groq's top reasoning model Apr 2026)
-  + llama-3.3-70b-versatile for cover letter prose
-  + QWEN3_THINK_PREFIX for chain-of-thought fallback on costing
-
-NEW — SECTION_WEIGHT_TABLE & CJ_RATE_CARD as module-level constants:
-  + Referenced inside multiple prompts — single source of truth
-  + Prevents rate/weight drift between prompts
-─────────────────────────────────────────────────────────────────
+Return ONLY valid JSON, no markdown:
+{{"structural_steel":{{"weight_kg":0.0,"source_description":"","confidence":0.0}},"handrails":{{"weight_kg":null,"linear_m":null,"source_description":null,"confidence":0.0}},"grating":{{"weight_kg":null,"area_m2":null,"source_description":null,"confidence":0.0}},"bolts_m20x90":{{"found":false,"qty":null,"description":"","other_bolts":[]}},"paint_material":{{"litres":0.0,"surface_area_m2":null,"paint_spec":"","paint_calc_method":"stated_directly|calculated_from_area|calculated_from_steel_weight","confidence":0.0}},"overall_confidence":0.0,"summary":""}}
 """

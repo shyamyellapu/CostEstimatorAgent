@@ -33,6 +33,7 @@ FileType = type('FileType', (), {
 })
 from app.services.file_storage import storage_service
 from app.services.document_parser import get_file_text, is_image_file, pdf_to_images
+from app.services.llama_parser import parse_to_markdown
 from app.services.costing_engine import run_costing_engine, DEFAULT_RATES
 from app.services.excel_generator import excel_generator
 from app.ai import get_ai_provider
@@ -165,77 +166,96 @@ async def extract_from_files(
     ai = get_ai_provider()
     all_extractions = []
 
+    # Collect all file bytes for batched LLM ingestion
+    batch_files = []
+    failed_files: list = []
     for uf in files:
         try:
             file_bytes = await storage_service.get_file(uf.storage_path)
+            batch_files.append({
+                "bytes": file_bytes,
+                "filename": uf.original_filename,
+                "file_type": uf.file_type or "",
+                "uf": uf,
+            })
+        except Exception as e:
+            logger.error(f"Could not load file {uf.original_filename}: {e}")
+            uf.is_processed = "failed"
+            failed_files.append({"file_id": str(uf.id), "filename": uf.original_filename, "error": str(e)})
 
-            # Determine extraction method
-            is_drawing = is_image_file(uf.original_filename) or uf.original_filename.lower().endswith(".pdf")
-            
-            if is_drawing:
-                if uf.original_filename.lower().endswith(".pdf"):
-                    text = get_file_text(file_bytes, uf.original_filename, uf.mime_type)
-                    text_extraction = None
-                    vision_extraction = None
+    all_extractions.extend(failed_files)
 
-                    # Only use text if there's meaningful extractable text (> 200 chars)
-                    if len(text.strip()) > 200:
-                        text_extraction = await ai.extract_from_document(
-                            text.encode("utf-8"), uf.file_type, uf.original_filename, additional_context
-                        )
+    if batch_files:
+        try:
+            # Parse each file via LlamaParse first, then send combined text to LLM
+            parsed_parts: list = []
+            raw_batch: list = []
+            for f in batch_files:
+                try:
+                    md = await parse_to_markdown(f["bytes"], f["filename"])
+                    parsed_parts.append(f"## File: {f['filename']}\n\n{md}")
+                    logger.info("LlamaParse parsed '%s' (%d chars)", f["filename"], len(md))
+                except Exception as parse_err:
+                    logger.warning(
+                        "LlamaParse unavailable for '%s' (%s) — falling back to raw bytes",
+                        f["filename"], parse_err,
+                    )
+                    raw_batch.append(f)
 
-                    vision_bytes = pdf_to_images(file_bytes)
-                    if vision_bytes and (text_extraction is None or _extraction_score(text_extraction) == 0):
-                        vision_extraction = await ai.extract_from_image(vision_bytes, uf.original_filename, additional_context)
-
-                    if text_extraction and vision_extraction:
-                        extraction = text_extraction if _extraction_score(text_extraction) >= _extraction_score(vision_extraction) else vision_extraction
-                    elif text_extraction:
-                        extraction = text_extraction
-                    elif vision_extraction:
-                        extraction = vision_extraction
-                    else:
-                        raise ValueError("Could not extract readable text or images from the PDF")
-                else:
-                    extraction = await ai.extract_from_image(file_bytes, uf.original_filename, additional_context)
+            if parsed_parts:
+                combined_text = "\n\n---\n\n".join(parsed_parts)
+                extraction = await ai.extract_from_document(
+                    file_bytes=combined_text.encode("utf-8"),
+                    file_type="txt",
+                    filename="parsed_document.txt",
+                    additional_context=additional_context,
+                )
             else:
-                # Use Text for everything else (BOQs, docs)
-                text = get_file_text(file_bytes, uf.original_filename, uf.mime_type)
-                extraction = await ai.extract_from_document(text.encode("utf-8"), uf.file_type, uf.original_filename, additional_context)
-
+                # Full fallback: no LlamaParse — send raw files directly
+                extraction = await ai.extract_from_multiple_files(
+                    [{"bytes": f["bytes"], "filename": f["filename"], "file_type": f["file_type"]} for f in raw_batch],
+                    additional_context,
+                )
+            # Store one combined extraction record linked to the first file
+            first_uf = batch_files[0]["uf"]
             ed = ExtractedData(
                 job_id=job.id,
-                file_id=uf.id,
+                file_id=first_uf.id,
                 data_type="full_extraction",
                 extracted_json=extraction.model_dump(),
                 raw_text=extraction.raw_text,
                 confidence=extraction.overall_confidence,
                 is_confirmed=False,
-                flags=[f.model_dump() for f in extraction.flags],
+                flags=[flag.model_dump() for flag in extraction.flags],
                 extraction_model=ai.provider_name,
             )
             db.add(ed)
-            uf.is_processed = "done"
-            all_extractions.append({
-                "file_id": str(uf.id),
-                "filename": uf.original_filename,
-                "extraction_id": str(ed.id),
-                "confidence": extraction.overall_confidence,
-                "dimensions_found": len(extraction.dimensions),
-                "flags": [f.model_dump() for f in extraction.flags],
-                "summary": extraction.summary,
-                "data": extraction.model_dump(),
-            })
+            await db.flush()
+            for f in batch_files:
+                uf = f["uf"]
+                uf.is_processed = "done"
+                all_extractions.append({
+                    "file_id": str(uf.id),
+                    "filename": uf.original_filename,
+                    "extraction_id": str(ed.id),
+                    "confidence": extraction.overall_confidence,
+                    "dimensions_found": len(extraction.dimensions),
+                    "flags": [flag.model_dump() for flag in extraction.flags],
+                    "summary": extraction.summary,
+                    "data": extraction.model_dump(),
+                })
         except Exception as e:
             import traceback
-            logger.error(f"Extraction failed for {uf.original_filename}: {e}")
+            logger.error(f"Batch extraction failed: {e}")
             logger.error(f"Full traceback:\n{traceback.format_exc()}")
-            uf.is_processed = "failed"
-            all_extractions.append({
-                "file_id": str(uf.id),
-                "filename": uf.original_filename,
-                "error": str(e),
-            })
+            for f in batch_files:
+                uf = f["uf"]
+                uf.is_processed = "failed"
+                all_extractions.append({
+                    "file_id": str(uf.id),
+                    "filename": uf.original_filename,
+                    "error": str(e),
+                })
 
     job.status = JobStatus.PENDING_CONFIRMATION
 

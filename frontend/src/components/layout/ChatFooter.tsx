@@ -13,7 +13,12 @@ export default function ChatFooter() {
   const [messages, setMessages] = useState<Message[]>([])
   const [loading, setLoading] = useState(false)
   const [sessionId] = useState(() => Math.random().toString(36).slice(2))
+  const [aiInfo, setAiInfo] = useState<{ provider: string; primary_model: string } | null>(null)
   const endRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    api.get('/ai/info').then(res => setAiInfo(res.data)).catch(() => {})
+  }, [])
 
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: 'smooth' })
@@ -77,7 +82,7 @@ export default function ChatFooter() {
               <div style={{ fontWeight: 700, fontSize: '0.875rem' }}>AI Assistant</div>
               <div style={{ fontSize: '0.75rem', color: 'var(--success-600)', display: 'flex', alignItems: 'center', gap: 4 }}>
                 <span style={{ width: 6, height: 6, borderRadius: '50%', background: 'var(--success-500)', display: 'inline-block' }} />
-                Online · Powered by Groq
+                Online · {aiInfo ? `${aiInfo.provider.charAt(0).toUpperCase() + aiInfo.provider.slice(1)} · ${aiInfo.primary_model}` : 'Loading...'}
               </div>
             </div>
             <button className="btn btn-ghost btn-icon btn-sm" onClick={() => setOpen(false)}>

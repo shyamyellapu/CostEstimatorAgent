@@ -8,9 +8,13 @@ The AI layer is ONLY responsible for:
   - Drafting cover letter content
 It must NEVER be used for costing calculations.
 """
+import logging
 from abc import ABC, abstractmethod
 from typing import Any, Dict, List, Optional
 from pydantic import BaseModel
+
+logger = logging.getLogger(__name__)
+_IMAGE_EXTENSIONS = frozenset({".png", ".jpg", ".jpeg", ".gif", ".bmp", ".tiff", ".webp"})
 
 
 class ExtractionFlag(BaseModel):
@@ -269,6 +273,45 @@ class AIProvider(ABC):
         """
         response = await self.chat([{"role": "user", "content": prompt}])
         return response.content
+
+    async def extract_from_multiple_files(
+        self,
+        files: List[Dict[str, Any]],
+        additional_context: Optional[str] = None,
+    ) -> "ExtractedDataResponse":
+        """
+        Send all uploaded files (PDFs, images, docs) to the LLM in a single call.
+        Default: processes each file individually then merges results.
+        Override in providers that natively support multi-file batching.
+        """
+        merged = ExtractedDataResponse()
+        for f in files:
+            fn = f.get("filename", "")
+            fb = f.get("bytes", b"")
+            ft = f.get("file_type", "")
+            suffix = ("." + fn.rsplit(".", 1)[-1].lower()) if "." in fn else ""
+            is_img = suffix in _IMAGE_EXTENSIONS
+            try:
+                if is_img:
+                    result = await self.extract_from_image(fb, fn, additional_context)
+                else:
+                    result = await self.extract_from_document(fb, ft, fn, additional_context)
+                merged.structural_elements.extend(result.structural_elements)
+                merged.dimensions.extend(result.dimensions)
+                merged.bolts_and_plates.extend(result.bolts_and_plates)
+                merged.annotations.extend(result.annotations or [])
+                merged.fabrication_notes.extend(result.fabrication_notes or [])
+                merged.flags.extend(result.flags)
+                merged.ambiguities.extend(result.ambiguities)
+                if not merged.drawing_metadata and result.drawing_metadata:
+                    merged.drawing_metadata = result.drawing_metadata
+                if result.overall_confidence > 0:
+                    merged.overall_confidence = max(merged.overall_confidence, result.overall_confidence)
+                if result.summary:
+                    merged.summary = ((merged.summary + " | ") if merged.summary else "") + result.summary
+            except Exception as exc:
+                logger.warning("extract_from_multiple_files fallback: %s failed: %s", fn, exc)
+        return merged
 
 
 # ---------------------------------------------------------------------------
