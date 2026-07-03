@@ -26,34 +26,17 @@ class FallbackProvider(AIProvider):
 
     async def _call_with_fallback(self, method_name: str, *args, **kwargs):
         errors: List[str] = []
-        total = len(self._providers)
-
-        for idx, provider in enumerate(self._providers, start=1):
-            role = "PRIMARY" if idx == 1 else f"FALLBACK-{idx - 1}"
-            print(
-                f"[AI] Using {role} model: {provider.provider_name} "
-                f"({idx}/{total}) | operation: {method_name}"
-            )
+        for provider in self._providers:
             try:
                 result = await getattr(provider, method_name)(*args, **kwargs)
                 if method_name == "parse_quotation" and isinstance(result, dict) and result.get("error"):
-                    raise RuntimeError(f"parse_quotation returned error payload: {result.get('error')}")
-                if idx > 1:
-                    print(f"[AI] {role} model ({provider.provider_name}) succeeded for '{method_name}'")
+                    raise RuntimeError(f"parse_quotation returned error: {result.get('error')}")
                 return result
             except Exception as err:
-                err_msg = f"{provider.provider_name}: {type(err).__name__}: {err}"
-                errors.append(err_msg)
+                errors.append(f"{provider.provider_name}: {type(err).__name__}: {err}")
                 logger.warning("%s failed for %s: %s", provider.provider_name, method_name, err)
-                if idx < total:
-                    next_provider = self._providers[idx].provider_name
-                    print(
-                        f"[AI] {role} ({provider.provider_name}) failed for '{method_name}' "
-                        f"— switching to {next_provider}"
-                    )
 
-        joined = " | ".join(errors)
-        raise RuntimeError(f"All AI providers failed for '{method_name}'. Details: {joined}")
+        raise RuntimeError(f"All providers failed for '{method_name}': {' | '.join(errors)}")
 
     async def extract_from_document(self, file_bytes, file_type, filename, additional_context=None):
         return await self._call_with_fallback(
@@ -63,6 +46,11 @@ class FallbackProvider(AIProvider):
     async def extract_from_image(self, image_bytes, filename, additional_context=None):
         return await self._call_with_fallback(
             "extract_from_image", image_bytes, filename, additional_context
+        )
+
+    async def extract_from_multiple_files(self, files, additional_context=None):
+        return await self._call_with_fallback(
+            "extract_from_multiple_files", files, additional_context
         )
 
     async def parse_boq(self, text, additional_context=None):
@@ -98,52 +86,61 @@ def _has_groq_key() -> bool:
     return bool((settings.groq_api_key or "").strip())
 
 
-def _build_provider_chain(preferred: str) -> List[AIProvider]:
-    chain_order = {
-        "openai": ["openai", "claude", "groq"],
-        "claude": ["claude", "openai", "groq"],
-        "groq": ["groq", "openai", "claude"],
-    }.get(preferred, ["openai", "claude", "groq"])
+def _has_openrouter_key() -> bool:
+    return bool((settings.openrouter_api_key or "").strip())
 
-    providers: List[AIProvider] = []
-    configured_names: List[str] = []
 
-    for name in chain_order:
-        if name == "openai":
-            if not _has_openai_key():
-                logger.info("Skipping openai in provider chain: OPENAI_API_KEY is not set")
-                continue
-            from app.ai.openai_provider import OpenAIProvider
-            providers.append(OpenAIProvider())
-            configured_names.append(f"openai({settings.openai_model})")
-        elif name == "claude":
-            if not _has_claude_key():
-                logger.info("Skipping claude in provider chain: ANTHROPIC_API_KEY is not set")
-                continue
-            from app.ai.claude_provider import ClaudeProvider
-            providers.append(ClaudeProvider())
-            configured_names.append(f"claude({settings.claude_model})")
-        elif name == "groq":
-            if not _has_groq_key():
-                logger.info("Skipping groq in provider chain: GROQ_API_KEY is not set")
-                continue
-            from app.ai.groq_provider import GroqProvider
-            providers.append(GroqProvider())
-            configured_names.append(f"groq({settings.groq_model_large})")
+def _has_gemini_key() -> bool:
+    return bool((settings.gemini_api_key or "").strip())
 
-    if not providers:
-        raise RuntimeError(
-            "No AI provider is configured with a valid API key. "
-            "Set at least one of OPENAI_API_KEY, ANTHROPIC_API_KEY, or GROQ_API_KEY in backend/.env"
-        )
 
-    print(f"[AI] Provider chain configured: {' -> '.join(configured_names)}")
-    return providers
+def _make_provider(name: str) -> "AIProvider | None":
+    if name == "openai":
+        if not _has_openai_key():
+            return None
+        from app.ai.openai_provider import OpenAIProvider
+        return OpenAIProvider()
+    if name == "claude":
+        if not _has_claude_key():
+            return None
+        from app.ai.claude_provider import ClaudeProvider
+        return ClaudeProvider()
+    if name == "groq":
+        if not _has_groq_key():
+            return None
+        from app.ai.groq_provider import GroqProvider
+        return GroqProvider()
+    if name == "openrouter":
+        if not _has_openrouter_key():
+            return None
+        from app.ai.openrouter_provider import OpenRouterProvider
+        return OpenRouterProvider()
+    if name == "gemini":
+        if not _has_gemini_key():
+            return None
+        from app.ai.gemini_provider import GeminiProvider
+        return GeminiProvider()
+    return None
 
 
 def get_ai_provider() -> AIProvider:
-    provider = settings.ai_provider.lower()
-    providers = _build_provider_chain(provider)
-    if len(providers) == 1:
-        return providers[0]
-    return FallbackProvider(providers=providers)
+    """
+    Return a provider based strictly on AI_PROVIDER in .env.
+    Only the declared provider is used — no silent fallback to other providers.
+    """
+    preferred = settings.ai_provider.strip().lower()
+    provider = _make_provider(preferred)
+
+    if provider is None:
+        raise RuntimeError(
+            f"AI_PROVIDER is set to '{preferred}' but its API key is missing. "
+            f"Set the corresponding key in backend/.env:\n"
+            f"  groq       → GROQ_API_KEY\n"
+            f"  openai     → OPENAI_API_KEY\n"
+            f"  claude     → ANTHROPIC_API_KEY\n"
+            f"  openrouter → OPENROUTER_API_KEY\n"
+            f"  gemini     → GEMINI_API_KEY"
+        )
+
+    logger.info("AI provider: %s (%s)", preferred, getattr(provider, 'provider_name', preferred))
+    return provider

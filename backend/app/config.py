@@ -30,6 +30,9 @@ class Settings(BaseSettings):
     aws_region: str = "us-east-1"
     aws_bucket_name: str = ""
 
+    # LlamaParse
+    llama_parse_api_key: str = ""
+
     # AI
     ai_provider: str = "openai"
     # OpenAI
@@ -42,10 +45,27 @@ class Settings(BaseSettings):
     groq_model_large: str = "llama-3.3-70b-versatile"
     groq_model_fast: str = "llama-3.1-8b-instant"
     groq_vision_model: str = "llama-3.2-11b-vision-preview"
+    # OpenRouter (OpenAI-compatible, free models available)
+    openrouter_api_key: str = ""
+    openrouter_model: str = "openai/gpt-oss-20b:free"
+    openrouter_model_fast: str = "openai/gpt-oss-20b:free"
+    openrouter_model_vision: str = "openai/gpt-oss-20b:free"
+
+    # Google Gemini (OpenAI-compatible via AI Studio)
+    gemini_api_key: str = ""
+    gemini_model: str = "gemini-3-flash"
+    gemini_model_fast: str = "gemini-3-flash"
+    gemini_model_vision: str = "gemini-3-flash"
+
     # Anthropic (Claude) — used as fallback when ai_provider=openai
     anthropic_api_key: str = ""
     claude_model: str = "claude-3-5-sonnet-20241022"
     claude_model_drawing: str = "claude-sonnet-4-20250514"
+    claude_drawing_pdf_mode: str = "images"  # auto | native_pdf | images
+    claude_drawing_image_dpi: int = 300
+    claude_drawing_standard_dpi: int = 300
+    claude_drawing_dense_dpi: int = 400          # A0/A1 dense drawings
+    max_llm_pages_per_batch: int = 15            # MAX_LLM_PAGES_PER_BATCH
     drawing_costing_template_path: str = "ReferenceFiles/Sample Job Costing Sheet.xlsx"
 
     # Company branding

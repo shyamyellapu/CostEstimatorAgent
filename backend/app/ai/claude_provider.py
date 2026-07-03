@@ -22,7 +22,54 @@ from app.config import settings
 
 logger = logging.getLogger(__name__)
 
-DOCUMENT_TEXT_CHAR_LIMIT = 50000
+DOCUMENT_TEXT_CHAR_LIMIT = 400000   # ~100k tokens — safe for Claude 200k context window
+
+# Claude's API limit for base64-encoded PDFs is 32 MB.
+# base64 inflates size by ~33%, so the original file must be ≤ 24 MB.
+CLAUDE_MAX_PDF_BYTES = 24 * 1024 * 1024
+
+
+def _flatten_extraction(data: dict) -> dict:
+    """Flatten structural_elements + bolts_and_plates into the dimensions list."""
+    dimensions: list = []
+    if "structural_elements" in data and isinstance(data["structural_elements"], list):
+        for el in data["structural_elements"]:
+            dimensions.append({
+                "item_tag":                 el.get("support_tag") or el.get("tag") or el.get("item_tag"),
+                "description":              el.get("item_description") or el.get("description"),
+                "section_type":             el.get("section_type"),
+                "section_designation":      el.get("section_designation"),
+                "material_grade":           el.get("material_grade"),
+                "length_mm":                el.get("length_mm") or el.get("l_mm"),
+                "width_mm":                 el.get("width_mm") or el.get("w_mm"),
+                "thickness_mm":             el.get("thickness_mm") or el.get("t_mm"),
+                "od_mm":                    el.get("od_mm"),
+                "quantity":                 el.get("quantity") or el.get("qty") or 1,
+                "unit_weight_kg_per_m":     el.get("unit_weight_kg_per_m"),
+                "total_weight_kg":          el.get("total_weight_kg") or el.get("weight_kg"),
+                "weld_length_per_joint_mm": el.get("weld_length_per_joint_mm"),
+                "weld_size_mm":             el.get("weld_size_mm"),
+                "weld_type":                el.get("weld_type"),
+                "surface_area_m2":          el.get("surface_area_m2"),
+                "is_existing":              el.get("is_existing", False),
+                "notes":                    el.get("notes"),
+                "confidence":               0.9,
+            })
+    if "bolts_and_plates" in data and isinstance(data["bolts_and_plates"], list):
+        for bp in data["bolts_and_plates"]:
+            desc = bp.get("item_description") or bp.get("description") or ""
+            dimensions.append({
+                "item_tag":     "BOLT",
+                "description":  desc,
+                "section_type": "plate" if "plate" in desc.lower() else "bolt",
+                "material_grade": bp.get("grade"),
+                "length_mm":    bp.get("length_mm"),
+                "quantity":     bp.get("quantity") or bp.get("qty") or 0,
+                "notes":        bp.get("notes"),
+                "confidence":   0.9,
+            })
+    data["dimensions"] = dimensions
+    return data
 
 
 class ClaudeProvider(AIProvider):
@@ -169,7 +216,61 @@ class ClaudeProvider(AIProvider):
         filename: str,
         additional_context: Optional[str] = None
     ) -> ExtractedDataResponse:
-        """Extract structured engineering data from document text."""
+        """Extract structured engineering data from text docs or raw PDF documents."""
+        file_type_lower = (file_type or "").lower()
+        is_pdf = filename.lower().endswith(".pdf") or "pdf" in file_type_lower
+
+        # For PDFs, send the full document directly to Claude.
+        if is_pdf and len(file_bytes) <= CLAUDE_MAX_PDF_BYTES:
+            context_note = f"\nAdditional context: {additional_context}" if additional_context else ""
+            prompt = DOCUMENT_EXTRACTION_PROMPT.format(
+                filename=filename,
+                text="Use the attached PDF document (all pages).",
+                context=context_note,
+            )
+
+            try:
+                pdf_b64 = base64.standard_b64encode(file_bytes).decode("utf-8")
+                response = await self._messages_create(
+                    max_tokens=6000,
+                    temperature=0.1,
+                    system=SYSTEM_PROMPT_ENGINEER,
+                    messages=[
+                        {
+                            "role": "user",
+                            "content": [
+                                {
+                                    "type": "document",
+                                    "source": {
+                                        "type": "base64",
+                                        "media_type": "application/pdf",
+                                        "data": pdf_b64,
+                                    },
+                                },
+                                {"type": "text", "text": prompt},
+                            ],
+                        }
+                    ],
+                )
+
+                content = response.content[0].text
+                data = self._parse_json_response(content)
+                return ExtractedDataResponse(**data)
+            except Exception as e:
+                logger.error(f"Claude PDF document extraction error: {e}")
+                raise
+
+        elif is_pdf:
+            # PDF is too large for base64 (> 24 MB); fall back to text extraction.
+            logger.warning(
+                "PDF '%s' (%d MB) exceeds Claude's 24 MB native-PDF limit; "
+                "falling back to text extraction.",
+                filename, len(file_bytes) // (1024 * 1024),
+            )
+            from app.services.document_parser import extract_text_from_pdf
+            file_bytes = extract_text_from_pdf(file_bytes).encode("utf-8")
+
+        # Non-PDF documents keep text-based extraction.
         text = file_bytes.decode("utf-8", errors="replace")
         context_note = f"\nAdditional context: {additional_context}" if additional_context else ""
         truncated_text = text[:DOCUMENT_TEXT_CHAR_LIMIT]
@@ -178,17 +279,17 @@ class ClaudeProvider(AIProvider):
             text=truncated_text,
             context=context_note
         )
-        
+
         try:
             response = await self._messages_create(
-                max_tokens=6000,
+                max_tokens=16000,
                 temperature=0.1,
                 system=SYSTEM_PROMPT_ENGINEER,
                 messages=[
                     {"role": "user", "content": prompt}
                 ]
             )
-            
+
             content = response.content[0].text
             data = self._parse_json_response(content)
             data["raw_text"] = text
@@ -273,57 +374,68 @@ class ClaudeProvider(AIProvider):
             logger.info(f"Last 500 chars: {content[-500:]}")
             
             data = self._parse_json_response(content)
-
-            # Robust repair for flag format and flatten nested structures
-            dimensions = []
-            if "structural_elements" in data and isinstance(data["structural_elements"], list):
-                for el in data["structural_elements"]:
-                    dimensions.append({
-                        "item_tag":             el.get("support_tag") or el.get("tag") or el.get("item_tag"),
-                        "description":          el.get("item_description") or el.get("description"),
-                        "section_type":         el.get("section_type"),
-                        "section_designation":  el.get("section_designation"),
-                        "material_grade":       el.get("material_grade"),
-                        "length_mm":            el.get("length_mm") or el.get("l_mm"),
-                        "width_mm":             el.get("width_mm") or el.get("w_mm"),
-                        "thickness_mm":         el.get("thickness_mm") or el.get("t_mm"),
-                        "od_mm":                el.get("od_mm"),
-                        "quantity":             el.get("quantity") or el.get("qty") or 1,
-                        # Pre-computed weights from Claude — most accurate, use these first
-                        "unit_weight_kg_per_m": el.get("unit_weight_kg_per_m"),
-                        "total_weight_kg":      el.get("total_weight_kg") or el.get("weight_kg"),
-                        # Weld details
-                        "weld_length_per_joint_mm": el.get("weld_length_per_joint_mm"),
-                        "weld_size_mm":         el.get("weld_size_mm"),
-                        "weld_type":            el.get("weld_type"),
-                        # Surface area
-                        "surface_area_m2":      el.get("surface_area_m2"),
-                        "is_existing":          el.get("is_existing", False),
-                        "notes":                el.get("notes"),
-                        "confidence":           0.9,
-                    })
-            
-            if "bolts_and_plates" in data and isinstance(data["bolts_and_plates"], list):
-                for bp in data["bolts_and_plates"]:
-                    desc = bp.get("item_description") or bp.get("description") or ""
-                    dimensions.append({
-                        "item_tag":             "BOLT",
-                        "description":          desc,
-                        "section_type":         "plate" if "plate" in desc.lower() else "bolt",
-                        "material_grade":       bp.get("grade"),
-                        "length_mm":            bp.get("length_mm"),
-                        "quantity":             bp.get("quantity") or bp.get("qty") or 0,
-                        "notes":                bp.get("notes"),
-                        "confidence":           0.9,
-                    })
-            
-            data["dimensions"] = dimensions
+            data = _flatten_extraction(data)
             return ExtractedDataResponse(**data)
         except Exception as e:
             import traceback
             logger.error(f"Claude image extraction error: {e}")
             logger.error(f"Exception type: {type(e).__name__}")
             logger.error(f"Full traceback:\n{traceback.format_exc()}")
+            raise
+
+    async def extract_from_multiple_files(
+        self,
+        files: List[Dict[str, Any]],
+        additional_context: Optional[str] = None,
+    ) -> ExtractedDataResponse:
+        """Send all PDFs and images to Claude in a single message — no pre-extraction."""
+        _IMG_MIMES = {
+            "jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png",
+            "gif": "image/gif", "webp": "image/webp",
+        }
+        context_note = f"\nAdditional context: {additional_context}" if additional_context else ""
+        filenames = ", ".join(f.get("filename", "") for f in files)
+        prompt = IMAGE_EXTRACTION_PROMPT.format(filename=filenames, context=context_note)
+        content_blocks: list = [{"type": "text", "text": prompt}]
+
+        for f in files:
+            fn = f.get("filename", "")
+            fb = f.get("bytes", b"")
+            ft = f.get("file_type", "")
+            ext = fn.rsplit(".", 1)[-1].lower() if "." in fn else ""
+            is_pdf = fn.lower().endswith(".pdf") or "pdf" in ft.lower()
+            is_img = ext in _IMG_MIMES
+
+            if is_pdf:
+                pdf_b64 = base64.standard_b64encode(fb).decode("utf-8")
+                content_blocks.append({
+                    "type": "document",
+                    "source": {"type": "base64", "media_type": "application/pdf", "data": pdf_b64},
+                })
+            elif is_img:
+                mime = _IMG_MIMES.get(ext, "image/png")
+                img_b64 = base64.standard_b64encode(fb).decode("utf-8")
+                content_blocks.append({
+                    "type": "image",
+                    "source": {"type": "base64", "media_type": mime, "data": img_b64},
+                })
+            else:
+                text = fb.decode("utf-8", errors="replace")[:DOCUMENT_TEXT_CHAR_LIMIT]
+                content_blocks.append({"type": "text", "text": f"=== File: {fn} ===\n{text}"})
+
+        try:
+            response = await self._messages_create(
+                max_tokens=8192,
+                temperature=0.0,
+                system=DRAWING_READER_SYSTEM_PROMPT,
+                messages=[{"role": "user", "content": content_blocks}],
+            )
+            content = response.content[0].text
+            data = self._parse_json_response(content)
+            data = _flatten_extraction(data)
+            return ExtractedDataResponse(**data)
+        except Exception as e:
+            logger.error(f"Claude multi-file extraction error: {e}")
             raise
 
     async def parse_boq(

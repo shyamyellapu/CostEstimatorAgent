@@ -17,6 +17,7 @@ from app.api.deps import db_session
 from app.services.document_parser import get_file_text
 from app.services.file_storage import storage_service
 from app.ai import get_ai_provider
+from app.config import settings
 from app.models import Job, UploadedFile, ExtractedData
 
 router = APIRouter()
@@ -104,12 +105,20 @@ async def parse_boq(
     if not file.filename:
         raise HTTPException(status_code=400, detail="File required")
     file_bytes = await file.read()
-    text = get_file_text(file_bytes, file.filename, file.content_type)
-    if not text.strip():
-        raise HTTPException(status_code=422, detail="Could not extract text from BOQ file")
     ai = get_ai_provider()
     try:
-        result = await ai.parse_boq(text, additional_context)
+        is_pdf = file.filename.lower().endswith(".pdf") or "pdf" in (file.content_type or "").lower()
+
+        # Claude path: send full PDF directly for extraction.
+        if settings.ai_provider.lower() == "claude" and is_pdf:
+            result = await ai.extract_from_document(file_bytes, "pdf", file.filename, additional_context)
+            text = ""
+        else:
+            text = get_file_text(file_bytes, file.filename, file.content_type)
+            if not text.strip():
+                raise HTTPException(status_code=422, detail="Could not extract text from BOQ file")
+            result = await ai.parse_boq(text, additional_context)
+
         member_types = _derive_member_types(result)
 
         job_number = f"BOQ-{datetime.now().strftime('%Y%m%d')}-{uuid.uuid4().hex[:6].upper()}"

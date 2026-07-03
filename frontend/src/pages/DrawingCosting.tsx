@@ -1,38 +1,28 @@
-import { useCallback, useRef, useState } from 'react'
+import { useCallback, useState } from 'react'
 import { useDropzone } from 'react-dropzone'
 import { api } from '../api/client'
 import {
-  AlertTriangle, CheckCircle, ChevronDown, ChevronUp,
-  FileText, FileSpreadsheet, RefreshCw, Upload,
+  AlertTriangle, CheckCircle, Clock, FileText,
+  RefreshCw, Upload, XCircle, Download, Lock,
+  FileSpreadsheet, Info,
 } from 'lucide-react'
 
-// ---------------------------------------------------------------------------
-// Types
-// ---------------------------------------------------------------------------
-interface ProjectInfo {
-  drawing_no: string
-  revision: string
-  title: string
-  client: string
-  contractor: string
-  package_description: string
-}
-
-interface MemberRow {
-  section: string
-  role: string
-  length_m: number
-  kg_per_m: number
-  pieces: number
-  weight_kg: number
-  is_estimated: boolean
-}
-
-interface Plate {
+// ─── Types ──────────────────────────────────────────────────────
+interface BomItem {
+  id: string
   description: string
-  thickness_mm: number
-  total_area_m2: number
-  pieces: number
+  category: string
+  section_type: string | null
+  section_size: string | null
+  material_grade: string | null
+  qty: number | null
+  length_mm: number | null
+  width_mm: number | null
+  thickness_mm: number | null
+  unit_weight_kg: number | null
+  total_weight_kg: number | null
+  confidence: number | null
+  review_required: boolean
 }
 
 interface Costing {
@@ -53,7 +43,7 @@ interface Costing {
   mpi_cost: number
   qaqc_cost: number
   packing_cost: number
-  subtotal_no_consum: number
+  subtotal: number
   overhead: number
   consumables: number
   grand_total: number
@@ -61,581 +51,732 @@ interface Costing {
   net_profit: number
   profit_pct: number
   markup_pct: number
-  member_rows: MemberRow[]
-  plates: Plate[]
 }
 
-interface CustomerFields {
-  customerName: string
-  refNo: string
-  enquiryNo: string
-  jobNo: string
-  attention: string
-  contact: string
+interface Flag {
+  field: string
+  message: string
+  severity?: string
 }
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-function aed(n: number) {
-  return `AED ${n.toLocaleString('en-AE', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`
-}
-
-function recompute(costing: Costing, markupPct: number): Costing {
-  const mk = markupPct / 100
-  const selling = (costing.subtotal_no_consum + costing.overhead) * (1 + mk)
-  const consumables = selling / 20
-  const grandTotal = costing.subtotal_no_consum + consumables + costing.overhead
-  const netProfit = selling - grandTotal
-  return {
-    ...costing,
-    selling_price: Math.round(selling),
-    consumables: Math.round(consumables * 100) / 100,
-    grand_total: Math.round(grandTotal * 100) / 100,
-    net_profit: Math.round(netProfit * 100) / 100,
-    profit_pct: selling ? Math.round((netProfit / selling) * 10000) / 100 : 0,
-    markup_pct: markupPct,
+interface WorkflowResult {
+  job_id: string
+  job_number: string
+  project_information: {
+    project_name?: string
+    client_name?: string
+    drawing_number?: string
   }
+  bom_items: BomItem[]
+  total_steel_kg: number
+  costing: Costing
+  overall_confidence: number
+  summary: string
+  flags: Flag[]
+  status: string
+  can_generate_excel: boolean
+  markup_pct: number
 }
 
-// ---------------------------------------------------------------------------
-// Main component
-// ---------------------------------------------------------------------------
-type Stage = 'upload' | 'review'
-
-export default function DrawingCosting() {
-  const [stage, setStage] = useState<Stage>('upload')
-  const [loading, setLoading] = useState(false)
-  const [exporting, setExporting] = useState(false)
-  const [downloadSuccess, setDownloadSuccess] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-  const [warning, setWarning] = useState<string | null>(null)
-
-  // extraction
-  const [project, setProject] = useState<ProjectInfo | null>(null)
-  const [notes, setNotes] = useState<string>('')
-  const [rawExtraction, setRawExtraction] = useState<object | null>(null)
-  const [drawingJobId, setDrawingJobId] = useState<string | null>(null)
-
-  // costing (mutable via markup slider)
-  const [costing, setCosting] = useState<Costing | null>(null)
-  const [markupPct, setMarkupPct] = useState(34)
-
-  // customer fields
-  const [customer, setCustomer] = useState<CustomerFields>({
-    customerName: '', refNo: '', enquiryNo: '', jobNo: '',
-    attention: '', contact: '',
+// ─── Helpers ─────────────────────────────────────────────────────
+function fmt(n: number | null | undefined, decimals = 2) {
+  if (n == null) return '—'
+  return n.toLocaleString('en-AE', {
+    minimumFractionDigits: 0,
+    maximumFractionDigits: decimals,
   })
+}
 
-  const fileRef = useRef<File | null>(null)
+function aed(n: number | null | undefined) {
+  if (n == null) return '—'
+  return `AED ${n.toLocaleString('en-AE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+}
 
-  // ---- Upload & analyse ----
-  const onDrop = useCallback(async (accepted: File[]) => {
-    const file = accepted[0]
-    if (!file) return
-    fileRef.current = file
-    setError(null)
-    setWarning(null)
-    setLoading(true)
-
-    try {
-      const fd = new FormData()
-      fd.append('file', file)
-      fd.append('markup_pct', String(markupPct))
-      const { data } = await api.post('/drawing-costing/analyse', fd, {
-        headers: { 'Content-Type': 'multipart/form-data' },
-        timeout: 180_000,
-      })
-
-      const proj: ProjectInfo = data.extraction?.project || {}
-      setProject(proj)
-      setNotes(data.extraction?.notes || '')
-      setRawExtraction(data.extraction)
-      setDrawingJobId(data.job_id || null)
-
-      if (data.warning) setWarning(data.warning)
-
-      if (data.costing) {
-        const computed = recompute(data.costing, markupPct)
-        setCosting(computed)
-        setCustomer(prev => ({
-          ...prev,
-          customerName: prev.customerName || proj.contractor || '',
-          jobNo:        prev.jobNo        || proj.drawing_no  || '',
-        }))
-        setStage('review')
-      }
-    } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : 'Upload failed')
-    } finally {
-      setLoading(false)
-    }
-  }, [markupPct])
-
-  const { getRootProps, getInputProps, isDragActive } = useDropzone({
-    onDrop,
-    accept: { 'application/pdf': ['.pdf'] },
-    maxFiles: 1,
-    disabled: loading,
-  })
-
-  // ---- Markup slider handler ----
-  const handleMarkup = (val: number) => {
-    setMarkupPct(val)
-    if (costing) setCosting(recompute(costing, val))
-  }
-
-  // ---- Export as Excel ----
-  const handleExport = async () => {
-    if (!costing || !rawExtraction) return
-    setExporting(true)
-    setDownloadSuccess(false)
-    setError(null)
-    try {
-      const resp = await api.post(
-        '/drawing-costing/generate-excel',
-        { extraction: rawExtraction, customer, markup_pct: markupPct, job_id: drawingJobId },
-        { responseType: 'blob', timeout: 60_000 },
-      )
-      const url   = URL.createObjectURL(new Blob([resp.data as BlobPart]))
-      const a     = document.createElement('a')
-      const jobNo = customer.jobNo || 'XXXX'
-      a.href      = url
-      a.download  = `JobCosting_${jobNo}.xlsx`
-      a.click()
-      URL.revokeObjectURL(url)
-      setDownloadSuccess(true)
-      setTimeout(() => setDownloadSuccess(false), 4000)
-    } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : 'Failed to generate Excel')
-    } finally {
-      setExporting(false)
-    }
-  }
-
-  // ---- Reset ----
-  const reset = () => {
-    setStage('upload')
-    setProject(null)
-    setCosting(null)
-    setRawExtraction(null)
-    setDrawingJobId(null)
-    setNotes('')
-    setWarning(null)
-    setError(null)
-    setDownloadSuccess(false)
-    setMarkupPct(34)
-    setCustomer({ customerName: '', refNo: '', enquiryNo: '', jobNo: '', attention: '', contact: '' })
-    fileRef.current = null
-  }
-
-  // ================================================================
-  // Render
-  // ================================================================
+function ConfidencePill({ value }: { value: number | null }) {
+  if (value == null) return <span style={{ color: 'var(--text-muted)' }}>—</span>
+  const pct = Math.round(value * 100)
+  const color = pct >= 85 ? 'var(--success-600)' : pct >= 65 ? 'var(--warning-600)' : 'var(--error-600)'
   return (
-    <div style={{ maxWidth: 1100, margin: '0 auto', padding: '24px 16px' }}>
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 4 }}>
-        <h1 style={{ fontSize: 22, fontWeight: 700, margin: 0 }}>Drawing Costing</h1>
-        {stage === 'review' && costing && (
-          <button
-            onClick={handleExport}
-            disabled={exporting}
-            style={{
-              ...styles.btnPrimary,
-              background: downloadSuccess ? '#16a34a' : 'var(--accent)',
-              minWidth: 190,
-            }}
-          >
-            {exporting
-              ? <><RefreshCw size={15} style={{ animation: 'spin 1s linear infinite' }} /> Exporting…</>
-              : downloadSuccess
-              ? <><CheckCircle size={15} /> Downloaded!</>
-              : <><FileSpreadsheet size={15} /> Export as Excel</>}
-          </button>
-        )}
-      </div>
-      <p style={{ color: 'var(--text-muted)', marginBottom: 24 }}>
-        Upload a structural steel drawing PDF to generate a Job Costing Sheet
-      </p>
-
-      {/* ---- Error / Warning banners ---- */}
-      {error && (
-        <div style={styles.banner('error')}>
-          <AlertTriangle size={16} style={{ flexShrink: 0 }} />
-          <span>{error}</span>
-        </div>
-      )}
-      {warning && (
-        <div style={styles.banner('warning')}>
-          <AlertTriangle size={16} style={{ flexShrink: 0 }} />
-          <span>{warning} No members detected — please verify the drawing or enter data manually.</span>
-        </div>
-      )}
-
-      {/* ================================================================ */}
-      {/* STAGE: upload                                                     */}
-      {/* ================================================================ */}
-      {stage === 'upload' && (
-        <div
-          {...getRootProps()}
-          style={{
-            ...styles.dropzone,
-            borderColor: isDragActive ? 'var(--accent)' : 'var(--border)',
-            background:  isDragActive ? 'var(--accent-subtle, #f0f4ff)' : 'var(--surface)',
-          }}
-        >
-          <input {...getInputProps()} />
-          {loading ? (
-            <div style={styles.dropzoneInner}>
-              <RefreshCw size={36} style={{ animation: 'spin 1s linear infinite', color: 'var(--accent)' }} />
-              <p style={{ marginTop: 12, color: 'var(--text-muted)' }}>
-                Analysing drawing with Claude AI…
-              </p>
-            </div>
-          ) : (
-            <div style={styles.dropzoneInner}>
-              <Upload size={36} style={{ color: 'var(--accent)' }} />
-              <p style={{ marginTop: 12, fontWeight: 600 }}>
-                {isDragActive ? 'Drop the PDF here' : 'Drag & drop a drawing PDF'}
-              </p>
-              <p style={{ color: 'var(--text-muted)', fontSize: 13 }}>
-                or <span style={{ color: 'var(--accent)', textDecoration: 'underline', cursor: 'pointer' }}>browse</span>
-                {' '}— max 32 MB
-              </p>
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* ================================================================ */}
-      {/* STAGE: review                                                     */}
-      {/* ================================================================ */}
-      {stage === 'review' && costing && project && (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
-
-          {/* 8.1 Project information */}
-          <Section title="Project Information (from drawing)">
-            <InfoGrid items={[
-              ['Drawing No.',       project.drawing_no],
-              ['Revision',          project.revision],
-              ['Title',             project.title],
-              ['Client',            project.client],
-              ['Contractor',        project.contractor],
-              ['Package',           project.package_description],
-              ['Source PDF',        fileRef.current?.name ?? ''],
-            ]} />
-          </Section>
-
-          {/* 8.2 Customer & Reference */}
-          <Section title="Customer & Reference">
-            <div style={styles.fieldGrid}>
-              {(
-                [
-                  ['customerName', 'Customer Name'],
-                  ['refNo',        'Ref No'],
-                  ['enquiryNo',    'Enquiry No'],
-                  ['jobNo',        'Job No'],
-                  ['attention',    'Attention'],
-                  ['contact',      'Contact No'],
-                ] as [keyof CustomerFields, string][]
-              ).map(([key, label]) => (
-                <label key={key} style={styles.fieldLabel}>
-                  <span style={styles.fieldLabelText}>{label}</span>
-                  <input
-                    style={styles.input}
-                    value={customer[key]}
-                    onChange={e => setCustomer(prev => ({ ...prev, [key]: e.target.value }))}
-                    placeholder={label}
-                  />
-                </label>
-              ))}
-            </div>
-          </Section>
-
-          {/* 8.3 Material Takeoff */}
-          <Section title="Material Takeoff">
-            <div style={{ overflowX: 'auto' }}>
-              <table style={styles.table}>
-                <thead>
-                  <tr>
-                    {['Section','Role','Length (m)','kg/m','Pieces','Weight (kg)'].map(h => (
-                      <th key={h} style={styles.th}>{h}</th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody>
-                  {costing.member_rows.map((r, i) => (
-                    <tr key={i} style={{ background: r.is_estimated ? '#fffbeb' : undefined }}>
-                      <td style={styles.td}>
-                        {r.section}
-                        {r.is_estimated && (
-                          <span title="Weight estimated (section not in lookup table)"
-                            style={{ marginLeft: 6, color: '#d97706', fontSize: 12 }}>⚠</span>
-                        )}
-                      </td>
-                      <td style={styles.td}>{r.role}</td>
-                      <td style={{ ...styles.td, textAlign: 'right' }}>{r.length_m.toFixed(2)}</td>
-                      <td style={{ ...styles.td, textAlign: 'right' }}>{r.kg_per_m}</td>
-                      <td style={{ ...styles.td, textAlign: 'right' }}>{r.pieces}</td>
-                      <td style={{ ...styles.td, textAlign: 'right', fontWeight: 600 }}>{r.weight_kg.toFixed(1)}</td>
-                    </tr>
-                  ))}
-                  {costing.plates.length > 0 && (
-                    <tr style={{ background: '#f8f8f8' }}>
-                      <td style={styles.td} colSpan={2}>
-                        Plates ({costing.plates.map(p => p.description).join(', ')})
-                      </td>
-                      <td style={{ ...styles.td, textAlign: 'right' }}>—</td>
-                      <td style={{ ...styles.td, textAlign: 'right' }}>—</td>
-                      <td style={{ ...styles.td, textAlign: 'right' }}>
-                        {costing.plates.reduce((s, p) => s + p.pieces, 0)}
-                      </td>
-                      <td style={{ ...styles.td, textAlign: 'right', fontWeight: 600 }}>
-                        {costing.plates
-                          .reduce((s, p) => s + p.thickness_mm * p.total_area_m2 * 7.85, 0)
-                          .toFixed(1)}
-                      </td>
-                    </tr>
-                  )}
-                </tbody>
-                <tfoot>
-                  <tr style={{ background: 'var(--surface-alt, #f0f4ff)' }}>
-                    <td style={{ ...styles.td, fontWeight: 700 }} colSpan={5}>Total Steel Weight</td>
-                    <td style={{ ...styles.td, textAlign: 'right', fontWeight: 700 }}>
-                      {costing.total_steel_kg.toFixed(1)} kg
-                    </td>
-                  </tr>
-                </tfoot>
-              </table>
-            </div>
-          </Section>
-
-          {/* 8.4 Derived Quantities */}
-          <Section title="Derived Quantities">
-            <div style={styles.kpiGrid}>
-              <KPI label="Bolts (M20×90)"           value={`${costing.bolts} Nos`} />
-              <KPI label="Paint Material"            value={`${costing.paint_litres} litres`} />
-              <KPI label="Surface Area (blast/paint)" value={`${costing.surface_area_sqm} SQM`} />
-              <KPI label="Welding Manhours"          value={`${costing.welding_mh} MH`} />
-              <KPI label="Fabrication Manhours"      value={`${costing.fabrication_mh} MH`} />
-              <KPI label="MPI/DPT Visits"            value={`${costing.mpi_visits} Visits`} />
-            </div>
-          </Section>
-
-          {/* 8.5 Cost Summary + Markup slider */}
-          <Section title="Cost Summary">
-            {/* Markup slider */}
-            <div style={{ display: 'flex', alignItems: 'center', gap: 14, marginBottom: 20 }}>
-              <span style={{ fontWeight: 600, minWidth: 70 }}>Markup %</span>
-              <input
-                type="range" min={0} max={80} step={1}
-                value={markupPct}
-                onChange={e => handleMarkup(Number(e.target.value))}
-                style={{ flex: 1, accentColor: 'var(--accent)' }}
-              />
-              <span style={{
-                minWidth: 52, textAlign: 'center', fontWeight: 700,
-                background: 'var(--accent)', color: '#fff',
-                borderRadius: 6, padding: '2px 10px',
-              }}>
-                {markupPct}%
-              </span>
-            </div>
-
-            {/* Line items */}
-            <table style={styles.table}>
-              <thead>
-                <tr>
-                  <th style={styles.th}>Line Item</th>
-                  <th style={{ ...styles.th, textAlign: 'right' }}>Amount (AED)</th>
-                </tr>
-              </thead>
-              <tbody>
-                {[
-                  ['Steel Material',        costing.steel_mat_cost],
-                  ['Bolts',                 costing.bolt_cost],
-                  ['Paint Material',        costing.paint_mat_cost],
-                  ['Welding Labour',        costing.weld_cost],
-                  ['Fabrication Labour',    costing.fab_cost],
-                  ['Blasting',              costing.blast_cost],
-                  ['Painting Application',  costing.paint_app_cost],
-                  ['MPI/DPT',              costing.mpi_cost],
-                  ['QA/QC Docs',           costing.qaqc_cost],
-                  ['Packing',              costing.packing_cost],
-                  ['Consumables (=SP/20)', costing.consumables],
-                  ['Overhead (S54)',       costing.overhead],
-                ].map(([label, val]) => (
-                  <tr key={String(label)}>
-                    <td style={styles.td}>{String(label)}</td>
-                    <td style={{ ...styles.td, textAlign: 'right' }}>{aed(Number(val))}</td>
-                  </tr>
-                ))}
-              </tbody>
-              <tfoot>
-                <tr style={{ background: 'var(--surface-alt, #f0f4ff)', fontWeight: 700 }}>
-                  <td style={styles.td}>Grand Total Cost</td>
-                  <td style={{ ...styles.td, textAlign: 'right' }}>{aed(costing.grand_total)}</td>
-                </tr>
-                <tr style={{ background: '#dbeafe', fontWeight: 700 }}>
-                  <td style={styles.td}>Selling Price</td>
-                  <td style={{ ...styles.td, textAlign: 'right', color: '#1d4ed8' }}>{aed(costing.selling_price)}</td>
-                </tr>
-                <tr style={{ background: '#dcfce7', fontWeight: 700 }}>
-                  <td style={styles.td}>Net Profit ({costing.profit_pct.toFixed(1)}%)</td>
-                  <td style={{ ...styles.td, textAlign: 'right', color: '#15803d' }}>{aed(costing.net_profit)}</td>
-                </tr>
-              </tfoot>
-            </table>
-          </Section>
-
-          {/* 8.6 Takeoff notes */}
-          {notes && (
-            <div style={styles.banner('info')}>
-              <FileText size={16} style={{ flexShrink: 0 }} />
-              <span><strong>Takeoff notes:</strong> {notes}</span>
-            </div>
-          )}
-
-          {/* 8.7 Actions */}
-          <div style={{ display: 'flex', gap: 12, justifyContent: 'space-between', alignItems: 'center', paddingTop: 8 }}>
-            <button onClick={reset} style={styles.btnSecondary} disabled={exporting}>
-              <RefreshCw size={16} /> Start Over
-            </button>
-            <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
-              {downloadSuccess && (
-                <span style={{ color: '#16a34a', fontWeight: 600, fontSize: 13, display: 'flex', alignItems: 'center', gap: 5 }}>
-                  <CheckCircle size={15} /> JobCosting_{customer.jobNo || 'XXXX'}.xlsx downloaded
-                </span>
-              )}
-              <button
-                onClick={handleExport}
-                disabled={exporting}
-                style={{
-                  ...styles.btnPrimary,
-                  background: downloadSuccess ? '#16a34a' : 'var(--accent)',
-                  minWidth: 200,
-                }}
-              >
-                {exporting
-                  ? <><RefreshCw size={16} style={{ animation: 'spin 1s linear infinite' }} /> Exporting…</>
-                  : downloadSuccess
-                  ? <><CheckCircle size={16} /> Export Again</>
-                  : <><FileSpreadsheet size={16} /> Export as Excel</>}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-
-    </div>
+    <span style={{ fontSize: '0.8rem', fontWeight: 700, color }}>
+      {pct}%
+    </span>
   )
 }
 
-// ---------------------------------------------------------------------------
-// Small reusable sub-components
-// ---------------------------------------------------------------------------
-function Section({ title, children }: { title: string; children: React.ReactNode }) {
-  const [open, setOpen] = useState(true)
-  return (
-    <div style={{
-      border: '1px solid var(--border)', borderRadius: 10,
-      overflow: 'hidden', background: 'var(--surface)',
-    }}>
-      <button
-        onClick={() => setOpen(v => !v)}
-        style={{
-          width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-          padding: '12px 16px', background: 'var(--surface-alt, #f8fafc)',
-          border: 'none', cursor: 'pointer', fontWeight: 700, fontSize: 14,
-          color: 'var(--text-primary)',
-        }}
-      >
-        {title}
-        {open ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
-      </button>
-      {open && <div style={{ padding: '16px' }}>{children}</div>}
-    </div>
-  )
-}
+type Step = { label: string; done: boolean; active: boolean }
 
-function InfoGrid({ items }: { items: [string, string][] }) {
+function ProcessingProgress({ steps }: { steps: Step[] }) {
   return (
-    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))', gap: 12 }}>
-      {items.filter(([, v]) => v).map(([label, value]) => (
-        <div key={label}>
-          <div style={{ fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>{label}</div>
-          <div style={{ fontWeight: 600, fontSize: 14, marginTop: 2 }}>{value}</div>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '0.625rem' }}>
+      {steps.map((s, i) => (
+        <div key={i} style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', fontSize: '0.875rem' }}>
+          {s.done
+            ? <CheckCircle size={18} style={{ color: 'var(--success-600)', flexShrink: 0 }} />
+            : s.active
+            ? <RefreshCw size={18} style={{ color: 'var(--primary-600)', flexShrink: 0, animation: 'spin 1s linear infinite' }} />
+            : <Clock size={18} style={{ color: 'var(--gray-300)', flexShrink: 0 }} />}
+          <span style={{
+            color: s.done ? 'var(--success-700)' : s.active ? 'var(--primary-700)' : 'var(--text-muted)',
+            fontWeight: s.active ? 600 : 400,
+          }}>
+            {s.label}
+          </span>
         </div>
       ))}
     </div>
   )
 }
 
-function KPI({ label, value }: { label: string; value: string }) {
+type Tab = 'bom' | 'costing' | 'summary'
+
+export default function DrawingCosting() {
+  const [files, setFiles] = useState<File[]>([])
+  const [markupPct, setMarkupPct] = useState(34)
+  const [loading, setLoading] = useState(false)
+  const [exporting, setExporting] = useState(false)
+  const [approving, setApproving] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [result, setResult] = useState<WorkflowResult | null>(null)
+  const [activeTab, setActiveTab] = useState<Tab>('bom')
+  const [processingStep, setProcessingStep] = useState(0)
+  const [customer, setCustomer] = useState({
+    customerName: '', refNo: '', enquiryNo: '', jobNo: '', attention: '', contact: '',
+  })
+
+  // New 4-step pipeline matching LlamaParse → LLM flow
+  const processingSteps: Step[] = [
+    { label: 'Uploading files',              done: processingStep > 0, active: processingStep === 0 && loading },
+    { label: 'Parsing documents (LlamaParse)', done: processingStep > 1, active: processingStep === 1 },
+    { label: 'Extracting data (LLM)',          done: processingStep > 2, active: processingStep === 2 },
+    { label: 'Computing costs (Python)',        done: processingStep > 3, active: processingStep === 3 },
+  ]
+
+  const { getRootProps, getInputProps, isDragActive } = useDropzone({
+    accept: {
+      'application/pdf': ['.pdf'],
+      'image/*': ['.png', '.jpg', '.jpeg'],
+      'text/plain': ['.txt'],
+      'application/vnd.openxmlformats-officedocument.wordprocessingml.document': ['.docx'],
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': ['.xlsx'],
+    },
+    multiple: true,
+    onDrop: (accepted) => setFiles(prev => [...prev, ...accepted]),
+  })
+
+  const removeFile = (i: number) => setFiles(files.filter((_, idx) => idx !== i))
+
+  const handleAnalyse = async () => {
+    if (!files.length) return
+    setLoading(true)
+    setError(null)
+    setProcessingStep(0)
+    setResult(null)
+
+    console.group(`%c[DrawingCosting] Analysis started — ${files.length} file(s)`, 'color:#6366f1;font-weight:bold')
+    console.log('Files:', files.map(f => ({ name: f.name, size: `${(f.size / 1024 / 1024).toFixed(2)} MB`, type: f.type })))
+    console.log('Markup %:', markupPct)
+    console.time('[DrawingCosting] Total time')
+
+    let t0: ReturnType<typeof setTimeout> | undefined
+
+    try {
+      const fd = new FormData()
+      files.forEach(f => fd.append('files', f))
+      fd.append('markup_pct', String(markupPct))
+
+      // Steps 0 (upload) and 1 (LlamaParse) advance on a timer because
+      // we can't know when LlamaParse finishes from the frontend.
+      // Steps 2 (LLM) and 3 (Computing costs) are flashed briefly AFTER
+      // the API returns — they are near-instant on the backend.
+      t0 = setTimeout(() => {
+        setProcessingStep(1)
+        console.log('%c[DrawingCosting] Step 2/4: Parsing with LlamaParse…', 'color:#6366f1')
+      }, 2000)
+
+      console.log('%c[DrawingCosting] → POST /api/drawing-costing/analyse', 'color:#0ea5e9')
+      const res = await api.post('/drawing-costing/analyse', fd, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+        timeout: 600_000,
+      })
+
+      clearTimeout(t0)
+
+      // LlamaParse + LLM finished — briefly show remaining steps before revealing result
+      setProcessingStep(2)
+      console.log('%c[DrawingCosting] Step 3/4: LLM extraction complete', 'color:#6366f1')
+      await new Promise(r => setTimeout(r, 400))
+
+      setProcessingStep(3)
+      console.log('%c[DrawingCosting] Step 4/4: Computing costs…', 'color:#6366f1')
+      await new Promise(r => setTimeout(r, 400))
+
+      setProcessingStep(4)
+
+      const data: WorkflowResult = res.data
+      console.log('%c[DrawingCosting] ✓ Response received', 'color:#22c55e;font-weight:bold')
+      console.log('Job ID:', data.job_id, '|', 'Job #:', data.job_number)
+      console.log('Status:', data.status, '| Confidence:', data.overall_confidence)
+      console.log('Total steel kg:', data.total_steel_kg)
+      console.log('Summary:', data.summary)
+
+      if (data.bom_items?.length) {
+        console.group(`%c[DrawingCosting] BOM items (${data.bom_items.length})`, 'color:#f59e0b')
+        console.table(
+          data.bom_items.map(b => ({
+            description: b.description,
+            category: b.category,
+            section: b.section_size ?? '—',
+            qty: b.qty ?? '—',
+            'weight kg': b.total_weight_kg ?? '—',
+            confidence: b.confidence != null ? `${Math.round(b.confidence * 100)}%` : '—',
+            review: b.review_required ? '⚠ YES' : 'OK',
+          }))
+        )
+        console.groupEnd()
+      } else {
+        console.warn('[DrawingCosting] No BOM items extracted')
+      }
+
+      if (data.flags?.length) {
+        console.group('%c[DrawingCosting] Flags / ambiguities', 'color:#ef4444')
+        data.flags.forEach(f => console.warn(`  [${f.severity ?? 'FLAG'}] ${f.field}: ${f.message}`))
+        console.groupEnd()
+      }
+
+      console.group('%c[DrawingCosting] Costing breakdown', 'color:#10b981')
+      console.table({
+        'Total steel (kg)':  data.costing.total_steel_kg,
+        'Selling price':     `AED ${data.costing.selling_price}`,
+        'Grand total':       `AED ${data.costing.grand_total}`,
+        'Net profit':        `AED ${data.costing.net_profit}`,
+        'Profit %':          `${data.costing.profit_pct}%`,
+        'Markup %':          `${data.costing.markup_pct}%`,
+      })
+      console.groupEnd()
+
+      console.log('%c[DrawingCosting] Full response object:', 'color:#64748b', data)
+      console.timeEnd('[DrawingCosting] Total time')
+      console.groupEnd()
+
+      setResult(data)
+      setActiveTab('bom')
+
+    } catch (e: any) {
+      clearTimeout(t0)
+      const msg = e?.response?.data?.detail || e?.message || 'Analysis failed'
+      console.error('%c[DrawingCosting] ✗ Error:', 'color:#ef4444;font-weight:bold', msg)
+      console.error('Full error:', e)
+      console.timeEnd('[DrawingCosting] Total time')
+      console.groupEnd()
+      setError(msg)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const handleRecalculate = async () => {
+    if (!result) return
+    setLoading(true)
+    setError(null)
+    console.log(`%c[DrawingCosting] Recalculating job ${result.job_id} at ${markupPct}% markup`, 'color:#6366f1')
+    try {
+      const res = await api.post(
+        `/drawing-costing/${result.job_id}/recalculate?markup_pct=${markupPct}`
+      )
+      console.log('[DrawingCosting] Recalculate result:', res.data)
+      setResult(prev => prev
+        ? { ...prev, total_steel_kg: res.data.total_steel_kg, costing: res.data.costing }
+        : null
+      )
+    } catch (e: any) {
+      const msg = e?.response?.data?.detail || e?.message
+      console.error('[DrawingCosting] Recalculate failed:', msg)
+      setError(msg)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const handleApprove = async () => {
+    if (!result) return
+    setApproving(true)
+    setError(null)
+    console.log(`%c[DrawingCosting] Approving job ${result.job_id}`, 'color:#22c55e')
+    try {
+      await api.post(`/drawing-costing/${result.job_id}/approve`)
+      console.log('[DrawingCosting] Job approved ✓')
+      setResult(prev => prev ? { ...prev, status: 'approved', can_generate_excel: true } : null)
+    } catch (e: any) {
+      const msg = e?.response?.data?.detail || e?.message
+      console.error('[DrawingCosting] Approve failed:', msg)
+      setError(msg)
+    } finally {
+      setApproving(false)
+    }
+  }
+
+  const handleGenerateExcel = async () => {
+    if (!result) return
+    setExporting(true)
+    setError(null)
+    console.log(`%c[DrawingCosting] Generating Excel for job ${result.job_id}`, 'color:#6366f1')
+    try {
+      const res = await api.post(
+        `/drawing-costing/${result.job_id}/generate-excel`,
+        { customer, markup_pct: markupPct },
+        { responseType: 'blob' }
+      )
+      const url = URL.createObjectURL(res.data)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `JobCosting_${customer.jobNo || result.job_number}.xlsx`
+      a.click()
+      URL.revokeObjectURL(url)
+      console.log('[DrawingCosting] Excel downloaded ✓')
+    } catch (e: any) {
+      const msg = e?.response?.data?.detail || e?.message
+      console.error('[DrawingCosting] Excel generation failed:', msg)
+      setError(msg)
+    } finally {
+      setExporting(false)
+    }
+  }
+
+  const handleBomEdit = async (id: string, field: string, value: any) => {
+    if (!result) return
+    console.log(`[DrawingCosting] Editing BOM item ${id}: ${field} = ${value}`)
+    try {
+      const res = await api.patch(`/drawing-costing/${result.job_id}/bom-items/${id}`, { [field]: value })
+      setResult(prev => prev
+        ? { ...prev, bom_items: prev.bom_items.map(i => i.id === id ? { ...i, ...res.data } : i) }
+        : null
+      )
+    } catch (e: any) {
+      console.error('[DrawingCosting] BOM edit failed:', e?.response?.data?.detail || e?.message)
+      setError(e?.message)
+    }
+  }
+
+  const getFileExt = (name: string) => name.split('.').pop()?.toLowerCase() || 'other'
+  const fileIconClass = (ext: string) =>
+    ext === 'pdf' ? 'pdf'
+    : ['png', 'jpg', 'jpeg'].includes(ext) ? 'img'
+    : ['xlsx', 'xls'].includes(ext) ? 'xlsx'
+    : ['docx', 'doc'].includes(ext) ? 'docx'
+    : 'other'
+
+  // ── UPLOAD SCREEN ──────────────────────────────────────────────
+  if (!result) {
+    return (
+      <div className="page-body" style={{ maxWidth: 700, margin: '0 auto', padding: '1.5rem' }}>
+        <div className="page-title-bar">
+          <h1 className="page-title">Drawing Costing</h1>
+          <p className="page-subtitle">
+            LlamaParse parses your documents → LLM extracts steel data → Python calculates costs → you review & export
+          </p>
+        </div>
+
+        <div className="card" style={{ marginTop: '1.5rem' }}>
+          <div className="card-body">
+            {/* Drop zone */}
+            <div {...getRootProps()} className={`upload-zone${isDragActive ? ' dragover' : ''}`}>
+              <input {...getInputProps()} />
+              <div className="upload-icon"><Upload size={22} /></div>
+              <p className="upload-title">Drop drawing PDFs here or click to browse</p>
+              <p className="upload-subtitle">PDF, PNG, JPG, DOCX, XLSX, TXT — up to 100 MB each</p>
+              <div className="upload-types">
+                {['PDF', 'PNG', 'JPG', 'DOCX', 'XLSX', 'TXT'].map(t => (
+                  <span key={t} className="upload-type-badge">{t}</span>
+                ))}
+              </div>
+            </div>
+
+            {/* File list */}
+            {files.length > 0 && (
+              <div className="file-list">
+                {files.map((f, i) => {
+                  const ext = getFileExt(f.name)
+                  return (
+                    <div key={i} className="file-item">
+                      <div className={`file-icon ${fileIconClass(ext)}`}>{ext.toUpperCase().slice(0, 3)}</div>
+                      <div className="file-info">
+                        <div className="file-name">{f.name}</div>
+                        <div className="file-size">{(f.size / 1024 / 1024).toFixed(1)} MB</div>
+                      </div>
+                      <button className="btn btn-ghost btn-sm" onClick={() => removeFile(i)}>Remove</button>
+                    </div>
+                  )
+                })}
+              </div>
+            )}
+
+            {/* Markup */}
+            <div className="form-group" style={{ marginTop: '1.25rem', maxWidth: 200 }}>
+              <label className="form-label">Markup %</label>
+              <input
+                type="number" min={0} max={80} value={markupPct}
+                onChange={e => setMarkupPct(Number(e.target.value))}
+                className="form-input"
+              />
+            </div>
+
+            {/* Processing progress */}
+            {loading && (
+              <div className="alert alert-info" style={{ marginTop: '1.25rem' }}>
+                <p style={{ fontWeight: 600, marginBottom: '0.875rem' }}>Processing drawing package…</p>
+                <ProcessingProgress steps={processingSteps} />
+                <p style={{ marginTop: '0.875rem', fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+                  Check the browser console (F12) for detailed logs.
+                </p>
+              </div>
+            )}
+
+            {error && <div className="alert alert-error" style={{ marginTop: '1rem' }}>{error}</div>}
+
+            <button
+              className="btn btn-primary btn-lg"
+              style={{ width: '100%', marginTop: '1.25rem' }}
+              onClick={handleAnalyse}
+              disabled={!files.length || loading}
+            >
+              {loading
+                ? <><RefreshCw size={16} style={{ animation: 'spin 1s linear infinite' }} /> Analysing…</>
+                : <><Upload size={16} /> Analyse Drawings</>
+              }
+            </button>
+          </div>
+        </div>
+      </div>
+    )
+  }
+
+  // ── REVIEW SCREEN ──────────────────────────────────────────────
+  const reviewCount = result.bom_items.filter(i => i.review_required).length
+  const tabs: { id: Tab; label: string; count?: number }[] = [
+    { id: 'bom',     label: 'BOM Items',  count: result.bom_items.length },
+    { id: 'costing', label: 'Costing' },
+    { id: 'summary', label: 'Summary' },
+  ]
+
   return (
-    <div style={{
-      border: '1px solid var(--border)', borderRadius: 8, padding: '12px 14px',
-      background: 'var(--surface)',
-    }}>
-      <div style={{ fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>{label}</div>
-      <div style={{ fontSize: 18, fontWeight: 700, marginTop: 4 }}>{value}</div>
+    <div className="page-body" style={{ maxWidth: 1200, margin: '0 auto', padding: '1rem 1.5rem' }}>
+
+      {/* Header */}
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '1rem' }}>
+        <div>
+          <h1 className="page-title">Drawing Review — {result.job_number}</h1>
+          <p className="page-subtitle">
+            {result.bom_items.length} BOM items · {fmt(result.total_steel_kg, 1)} kg steel
+            {reviewCount > 0 && (
+              <span style={{ color: 'var(--warning-600)', marginLeft: '0.5rem', fontWeight: 600 }}>
+                · {reviewCount} items need review
+              </span>
+            )}
+            {result.project_information?.drawing_number && (
+              <span style={{ color: 'var(--text-muted)', marginLeft: '0.5rem' }}>
+                · Dwg: {result.project_information.drawing_number}
+              </span>
+            )}
+          </p>
+        </div>
+        <button
+          className="btn btn-ghost btn-sm"
+          onClick={() => { setResult(null); setFiles([]); setProcessingStep(0) }}
+        >
+          ← New Analysis
+        </button>
+      </div>
+
+      {/* Confidence strip */}
+      <div style={{
+        display: 'flex', gap: '1rem', alignItems: 'center',
+        padding: '0.6rem 1rem', background: 'var(--gray-50)',
+        borderRadius: 'var(--radius-md)', border: '1px solid var(--border)',
+        marginBottom: '1rem', fontSize: '0.82rem',
+      }}>
+        <span style={{ color: 'var(--text-muted)' }}>Extraction confidence:</span>
+        <ConfidencePill value={result.overall_confidence} />
+        <span style={{ color: 'var(--text-muted)', marginLeft: 'auto', fontStyle: 'italic', maxWidth: 500, overflow: 'hidden', whiteSpace: 'nowrap', textOverflow: 'ellipsis' }}>
+          {result.summary}
+        </span>
+      </div>
+
+      {error && <div className="alert alert-error" style={{ marginBottom: '0.75rem' }}>{error}</div>}
+
+      {/* Action buttons */}
+      <div style={{ display: 'flex', gap: '0.625rem', flexWrap: 'wrap', marginBottom: '1rem' }}>
+        <button className="btn btn-secondary" onClick={handleRecalculate} disabled={loading}>
+          <RefreshCw size={14} className={loading ? 'spin' : ''} /> Recalculate
+        </button>
+        <button className="btn btn-secondary" onClick={handleApprove} disabled={approving}>
+          <Lock size={14} /> {approving ? 'Approving…' : 'Approve'}
+        </button>
+        <button className="btn btn-success" onClick={handleGenerateExcel} disabled={exporting}>
+          <FileSpreadsheet size={14} /> {exporting ? 'Generating…' : 'Generate Excel'}
+        </button>
+      </div>
+
+      {/* Tabs */}
+      <div className="tabs">
+        {tabs.map(t => (
+          <button
+            key={t.id}
+            className={`tab${activeTab === t.id ? ' active' : ''}`}
+            onClick={() => setActiveTab(t.id)}
+          >
+            {t.label}
+            {t.count !== undefined && (
+              <span style={{
+                marginLeft: '0.375rem', padding: '0.1rem 0.4rem',
+                background: 'var(--gray-100)', borderRadius: 'var(--radius-full)',
+                fontSize: '0.7rem', color: 'var(--text-muted)',
+              }}>
+                {t.count}
+              </span>
+            )}
+          </button>
+        ))}
+      </div>
+
+      {/* ── BOM Items tab ── */}
+      {activeTab === 'bom' && (
+        <>
+          {result.bom_items.length === 0 ? (
+            <div className="alert alert-warning" style={{ marginTop: '1rem' }}>
+              No BOM items were extracted. Check console (F12) for details on what the LLM returned.
+            </div>
+          ) : (
+            <div className="table-container">
+              <table className="data-table">
+                <thead>
+                  <tr>
+                    <th>#</th>
+                    <th>Description</th>
+                    <th>Category</th>
+                    <th>Section</th>
+                    <th>Qty</th>
+                    <th>Length (mm)</th>
+                    <th>Unit Wt (kg/m)</th>
+                    <th>Total Wt (kg)</th>
+                    <th>Grade</th>
+                    <th>Confidence</th>
+                    <th></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {result.bom_items.map((item, i) => (
+                    <tr
+                      key={item.id}
+                      style={item.review_required ? { background: 'var(--warning-50)' } : {}}
+                    >
+                      <td style={{ color: 'var(--text-muted)', fontSize: '0.75rem' }}>{i + 1}</td>
+                      <td>
+                        <input
+                          defaultValue={item.description}
+                          onBlur={e => handleBomEdit(item.id, 'description', e.target.value)}
+                          style={{ width: 200, fontSize: '0.8rem', padding: '0.25rem 0.4rem', border: '1px solid transparent', borderRadius: 4, background: 'transparent' }}
+                          onFocus={e => (e.target.style.borderColor = 'var(--primary-400)')}
+                        />
+                      </td>
+                      <td style={{ fontSize: '0.75rem' }}>{item.category}</td>
+                      <td style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>{item.section_size || '—'}</td>
+                      <td>
+                        <input
+                          type="number"
+                          defaultValue={item.qty ?? ''}
+                          placeholder="—"
+                          onBlur={e => handleBomEdit(item.id, 'qty', e.target.value ? Number(e.target.value) : null)}
+                          style={{ width: 55, fontSize: '0.8rem', padding: '0.25rem 0.4rem', border: '1px solid transparent', borderRadius: 4, background: 'transparent' }}
+                          onFocus={e => (e.target.style.borderColor = 'var(--primary-400)')}
+                        />
+                      </td>
+                      <td>
+                        <input
+                          type="number"
+                          defaultValue={item.length_mm ?? ''}
+                          placeholder="—"
+                          onBlur={e => handleBomEdit(item.id, 'length_mm', e.target.value ? Number(e.target.value) : null)}
+                          style={{ width: 80, fontSize: '0.8rem', padding: '0.25rem 0.4rem', border: '1px solid transparent', borderRadius: 4, background: 'transparent' }}
+                          onFocus={e => (e.target.style.borderColor = 'var(--primary-400)')}
+                        />
+                      </td>
+                      <td style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>{fmt(item.unit_weight_kg)}</td>
+                      <td>
+                        <input
+                          type="number"
+                          defaultValue={item.total_weight_kg ?? ''}
+                          placeholder="—"
+                          onBlur={e => handleBomEdit(item.id, 'total_weight_kg', e.target.value ? Number(e.target.value) : null)}
+                          style={{ width: 80, fontSize: '0.8rem', padding: '0.25rem 0.4rem', border: '1px solid transparent', borderRadius: 4, background: 'transparent' }}
+                          onFocus={e => (e.target.style.borderColor = 'var(--primary-400)')}
+                        />
+                      </td>
+                      <td style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>{item.material_grade || '—'}</td>
+                      <td><ConfidencePill value={item.confidence} /></td>
+                      <td>
+                        {item.review_required && <span className="badge badge-warning">⚠ Review</span>}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </>
+      )}
+
+      {/* ── Costing tab ── */}
+      {activeTab === 'costing' && (
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1.25rem', marginTop: '0.5rem' }}>
+
+          {/* Customer + markup form */}
+          <div className="card">
+            <div className="card-header"><h3 className="card-title">Customer Information</h3></div>
+            <div className="card-body" style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+              {Object.entries(customer).map(([k, v]) => (
+                <div key={k} className="form-group">
+                  <label className="form-label">{k.replace(/([A-Z])/g, ' $1').trim()}</label>
+                  <input
+                    className="form-input" value={v}
+                    onChange={e => setCustomer(prev => ({ ...prev, [k]: e.target.value }))}
+                  />
+                </div>
+              ))}
+              <div className="form-group">
+                <label className="form-label">Markup %</label>
+                <input
+                  type="number" min={0} max={80} className="form-input" value={markupPct}
+                  onChange={e => setMarkupPct(Number(e.target.value))}
+                />
+              </div>
+              <button className="btn btn-secondary btn-sm" onClick={handleRecalculate} disabled={loading}>
+                <RefreshCw size={13} /> Apply Markup
+              </button>
+            </div>
+          </div>
+
+          {/* Cost breakdown */}
+          <div className="card">
+            <div className="card-header"><h3 className="card-title">Cost Breakdown</h3></div>
+            <div className="card-body" style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem' }}>
+              {[
+                { label: 'Total Steel',         value: `${fmt(result.costing.total_steel_kg)} kg` },
+                { label: 'Steel Material',       value: aed(result.costing.steel_mat_cost) },
+                { label: 'Bolts',                value: aed(result.costing.bolt_cost) },
+                { label: 'Paint Material',       value: aed(result.costing.paint_mat_cost) },
+                { label: 'Welding Labour',       value: aed(result.costing.weld_cost) },
+                { label: 'Fabrication Labour',   value: aed(result.costing.fab_cost) },
+                { label: 'Blasting',             value: aed(result.costing.blast_cost) },
+                { label: 'Painting',             value: aed(result.costing.paint_app_cost) },
+                { label: 'MPI / Inspection',     value: aed(result.costing.mpi_cost) },
+                { label: 'QA/QC',                value: aed(result.costing.qaqc_cost) },
+                { label: 'Packing & Loading',    value: aed(result.costing.packing_cost) },
+              ].map(({ label, value }) => (
+                <div key={label} className="cost-row">
+                  <span style={{ color: 'var(--text-secondary)', fontSize: '0.83rem' }}>{label}</span>
+                  <span style={{ fontSize: '0.83rem' }}>{value}</span>
+                </div>
+              ))}
+
+              <hr style={{ margin: '0.5rem 0', borderColor: 'var(--border)' }} />
+
+              {[
+                { label: 'Subtotal',     value: aed(result.costing.subtotal),    bold: false },
+                { label: 'Overhead',     value: aed(result.costing.overhead),    bold: false },
+                { label: 'Consumables',  value: aed(result.costing.consumables), bold: false },
+                { label: 'Grand Total',  value: aed(result.costing.grand_total), bold: true  },
+              ].map(({ label, value, bold }) => (
+                <div key={label} className="cost-row">
+                  <span style={{ fontWeight: bold ? 700 : 400, fontSize: '0.83rem' }}>{label}</span>
+                  <span style={{ fontWeight: bold ? 700 : 400, fontSize: '0.83rem' }}>{value}</span>
+                </div>
+              ))}
+
+              <div className="cost-row" style={{
+                background: 'var(--primary-50)', padding: '0.6rem 0.75rem',
+                borderRadius: 'var(--radius-md)', border: '1px solid var(--primary-200)',
+                marginTop: '0.25rem',
+              }}>
+                <span style={{ fontWeight: 800, color: 'var(--primary-800)' }}>Selling Price</span>
+                <span style={{ fontWeight: 800, color: 'var(--primary-800)', fontSize: '1.1rem' }}>
+                  {aed(result.costing.selling_price)}
+                </span>
+              </div>
+
+              <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '0.25rem', textAlign: 'right' }}>
+                Profit: {aed(result.costing.net_profit)} ({fmt(result.costing.profit_pct, 1)}%) · Markup: {fmt(result.costing.markup_pct, 1)}%
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Summary tab ── */}
+      {activeTab === 'summary' && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem', marginTop: '0.5rem' }}>
+
+          {/* Extraction summary */}
+          <div className="card">
+            <div className="card-header"><h3 className="card-title">Extraction Summary</h3></div>
+            <div className="card-body" style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+              <p style={{ fontSize: '0.9rem', color: 'var(--text-secondary)', lineHeight: 1.6 }}>
+                {result.summary || 'No summary available.'}
+              </p>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: '0.5rem' }}>
+                {[
+                  { label: 'BOM Items',        value: String(result.bom_items.length) },
+                  { label: 'Total Steel',       value: `${fmt(result.total_steel_kg, 1)} kg` },
+                  { label: 'Confidence',        value: result.overall_confidence != null ? `${Math.round(result.overall_confidence * 100)}%` : '—' },
+                  { label: 'Need Review',       value: String(reviewCount) },
+                  { label: 'Selling Price',     value: aed(result.costing.selling_price) },
+                ].map(({ label, value }) => (
+                  <div key={label} style={{ padding: '0.75rem', background: 'var(--gray-50)', borderRadius: 'var(--radius-md)', border: '1px solid var(--border)' }}>
+                    <p style={{ fontSize: '0.65rem', color: 'var(--text-muted)', marginBottom: '0.2rem', letterSpacing: '0.04em', textTransform: 'uppercase' }}>{label}</p>
+                    <p style={{ fontSize: '1rem', fontWeight: 700 }}>{value}</p>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+
+          {/* Project info */}
+          {(result.project_information?.project_name || result.project_information?.client_name || result.project_information?.drawing_number) && (
+            <div className="card">
+              <div className="card-header"><h3 className="card-title">Project Information</h3></div>
+              <div className="card-body" style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem' }}>
+                {[
+                  { label: 'Project Name',   value: result.project_information.project_name },
+                  { label: 'Client',         value: result.project_information.client_name },
+                  { label: 'Drawing Number', value: result.project_information.drawing_number },
+                ].filter(r => r.value).map(({ label, value }) => (
+                  <div key={label} className="cost-row">
+                    <span style={{ color: 'var(--text-muted)', fontSize: '0.83rem' }}>{label}</span>
+                    <span style={{ fontSize: '0.83rem' }}>{value}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Flags */}
+          {result.flags?.length > 0 && (
+            <div className="card">
+              <div className="card-header">
+                <h3 className="card-title" style={{ color: 'var(--warning-700)' }}>
+                  ⚠ Ambiguities & Flags ({result.flags.length})
+                </h3>
+              </div>
+              <div className="card-body" style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+                {result.flags.map((f, i) => (
+                  <div key={i} className="alert alert-warning" style={{ padding: '0.5rem 0.75rem', fontSize: '0.82rem' }}>
+                    <strong>{f.field}:</strong> {f.message}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
     </div>
   )
-}
-
-// ---------------------------------------------------------------------------
-// Style objects
-// ---------------------------------------------------------------------------
-const styles = {
-  dropzone: {
-    border: '2px dashed',
-    borderRadius: 12,
-    padding: '56px 24px',
-    textAlign: 'center' as const,
-    cursor: 'pointer',
-    transition: 'border-color 0.2s, background 0.2s',
-  },
-  dropzoneInner: { display: 'flex', flexDirection: 'column' as const, alignItems: 'center' },
-  banner: (type: 'error' | 'warning' | 'info') => ({
-    display: 'flex', alignItems: 'flex-start', gap: 10,
-    padding: '12px 14px', borderRadius: 8, marginBottom: 16,
-    fontSize: 14,
-    ...(type === 'error'   ? { background: '#fee2e2', color: '#991b1b' } :
-        type === 'warning' ? { background: '#fef9c3', color: '#854d0e' } :
-                             { background: '#dbeafe', color: '#1e40af' }),
-  }),
-  fieldGrid: {
-    display: 'grid',
-    gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))',
-    gap: 16,
-  },
-  fieldLabel: { display: 'flex', flexDirection: 'column' as const, gap: 4 },
-  fieldLabelText: { fontSize: 12, fontWeight: 600, color: 'var(--text-muted)', textTransform: 'uppercase' as const, letterSpacing: '0.05em' },
-  input: {
-    border: '1px solid var(--border)', borderRadius: 6,
-    padding: '7px 10px', fontSize: 14, width: '100%', boxSizing: 'border-box' as const,
-    background: 'var(--surface)', color: 'var(--text-primary)',
-  },
-  table: { width: '100%', borderCollapse: 'collapse' as const, fontSize: 13 },
-  th: {
-    background: 'var(--surface-alt, #f8fafc)',
-    padding: '8px 10px', textAlign: 'left' as const,
-    fontWeight: 700, fontSize: 12, textTransform: 'uppercase' as const,
-    letterSpacing: '0.04em', borderBottom: '1px solid var(--border)',
-  },
-  td: { padding: '8px 10px', borderBottom: '1px solid var(--border)' },
-  kpiGrid: { display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))', gap: 12 },
-  btnPrimary: {
-    display: 'inline-flex', alignItems: 'center', gap: 8,
-    background: 'var(--accent)', color: '#fff',
-    border: 'none', borderRadius: 8, padding: '10px 20px',
-    fontWeight: 600, fontSize: 14, cursor: 'pointer',
-  },
-  btnSecondary: {
-    display: 'inline-flex', alignItems: 'center', gap: 8,
-    background: 'var(--surface)', color: 'var(--text-secondary)',
-    border: '1px solid var(--border)', borderRadius: 8, padding: '10px 20px',
-    fontWeight: 600, fontSize: 14, cursor: 'pointer',
-  },
 }

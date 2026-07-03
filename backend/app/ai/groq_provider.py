@@ -27,7 +27,7 @@ from app.config import settings
 
 logger = logging.getLogger(__name__)
 
-DOCUMENT_TEXT_CHAR_LIMIT = 50000
+DOCUMENT_TEXT_CHAR_LIMIT = 300000   # ~75k tokens — safe for Llama 3.3 70b 128k context
 
 
 class GroqProvider(AIProvider):
@@ -104,7 +104,7 @@ class GroqProvider(AIProvider):
                 {"role": "user", "content": prompt}
             ],
             temperature=0.1,
-            max_tokens=6000,
+            max_tokens=16000,
         )
         response.raw_text = text
         return response
@@ -201,6 +201,90 @@ class GroqProvider(AIProvider):
         data["dimensions"] = dimensions
         return ExtractedDataResponse(**data)
 
+    async def extract_from_multiple_files(
+        self,
+        files: List[Dict[str, Any]],
+        additional_context: Optional[str] = None,
+    ) -> ExtractedDataResponse:
+        """Render all PDFs to page images and send all files to Groq in a single vision call."""
+        import fitz
+        import json as _json
+        _IMG_MIMES = {
+            "jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png",
+            "gif": "image/gif", "webp": "image/webp",
+        }
+        context_note = f"\nAdditional context: {additional_context}" if additional_context else ""
+        filenames = ", ".join(f.get("filename", "") for f in files)
+        user_content = [
+            {"type": "text", "text": IMAGE_EXTRACTION_PROMPT.format(filename=filenames, context=context_note)}
+        ]
+
+        for f in files:
+            fn = f.get("filename", "")
+            fb = f.get("bytes", b"")
+            ft = f.get("file_type", "")
+            ext = fn.rsplit(".", 1)[-1].lower() if "." in fn else ""
+            is_pdf = fn.lower().endswith(".pdf") or "pdf" in ft.lower()
+            is_img = ext in _IMG_MIMES
+
+            if is_pdf:
+                doc = fitz.open(stream=fb, filetype="pdf")
+                try:
+                    for page in doc:
+                        pix = page.get_pixmap(dpi=150)
+                        b64 = base64.standard_b64encode(pix.tobytes("png")).decode("utf-8")
+                        user_content.append({"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64}"}})
+                finally:
+                    doc.close()
+            elif is_img:
+                mime = _IMG_MIMES.get(ext, "image/png")
+                b64 = base64.standard_b64encode(fb).decode("utf-8")
+                user_content.append({"type": "image_url", "image_url": {"url": f"data:{mime};base64,{b64}"}})
+            else:
+                text = fb.decode("utf-8", errors="replace")[:12000]
+                user_content.append({"type": "text", "text": f"=== File: {fn} ===\n{text}"})
+
+        raw_response = await self.raw_client.chat.completions.create(
+            model=self.model_vision,
+            messages=[
+                {"role": "system", "content": SYSTEM_PROMPT_ENGINEER},
+                {"role": "user", "content": user_content},
+            ],
+            temperature=0.1,
+            max_tokens=8192,
+            response_format={"type": "json_object"},
+        )
+        data = _json.loads(raw_response.choices[0].message.content)
+        dimensions: list = []
+        if "structural_elements" in data and isinstance(data["structural_elements"], list):
+            for el in data["structural_elements"]:
+                dimensions.append({
+                    "item_tag": el.get("support_tag") or el.get("item_tag"),
+                    "description": el.get("item_description") or el.get("description"),
+                    "section_type": el.get("section_type"),
+                    "material_grade": el.get("material_grade"),
+                    "length_mm": el.get("length_mm"),
+                    "width_mm": el.get("width_mm"),
+                    "thickness_mm": el.get("thickness_mm"),
+                    "quantity": el.get("quantity", 1),
+                    "surface_area_m2": el.get("surface_area_m2"),
+                    "notes": el.get("notes"),
+                    "confidence": 0.9,
+                })
+        if "bolts_and_plates" in data and isinstance(data["bolts_and_plates"], list):
+            for bp in data["bolts_and_plates"]:
+                desc = bp.get("item_description") or ""
+                dimensions.append({
+                    "item_tag": "BOLT/PLATE",
+                    "description": desc,
+                    "section_type": "plate" if "plate" in desc.lower() else "bolt",
+                    "material_grade": bp.get("grade"),
+                    "quantity": bp.get("quantity", 0),
+                    "confidence": 0.9,
+                })
+        data["dimensions"] = dimensions
+        return ExtractedDataResponse(**data)
+
     async def parse_boq(
         self,
         text: str,
@@ -279,7 +363,7 @@ class GroqProvider(AIProvider):
                     {"role": "user", "content": prompt}
                 ],
                 temperature=0.2,
-                max_tokens=6000,
+                max_tokens=16000,
                 response_format={"type": "json_object"},
             )
             data = json.loads(raw.choices[0].message.content)

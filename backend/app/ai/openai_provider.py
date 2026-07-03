@@ -21,7 +21,50 @@ from app.config import settings
 
 logger = logging.getLogger(__name__)
 
-DOCUMENT_TEXT_CHAR_LIMIT = 50000
+DOCUMENT_TEXT_CHAR_LIMIT = 300000   # ~75k tokens — safe for GPT-4o 128k context window
+
+
+def _flatten_extraction(data: dict) -> dict:
+    """Flatten structural_elements + bolts_and_plates into the dimensions list."""
+    dimensions: list = []
+    if "structural_elements" in data and isinstance(data["structural_elements"], list):
+        for el in data["structural_elements"]:
+            dimensions.append({
+                "item_tag":                 el.get("support_tag") or el.get("tag") or el.get("item_tag"),
+                "description":              el.get("item_description") or el.get("description"),
+                "section_type":             el.get("section_type"),
+                "section_designation":      el.get("section_designation"),
+                "material_grade":           el.get("material_grade"),
+                "length_mm":                el.get("length_mm") or el.get("l_mm"),
+                "width_mm":                 el.get("width_mm") or el.get("w_mm"),
+                "thickness_mm":             el.get("thickness_mm") or el.get("t_mm"),
+                "od_mm":                    el.get("od_mm"),
+                "quantity":                 el.get("quantity") or el.get("qty") or 1,
+                "unit_weight_kg_per_m":     el.get("unit_weight_kg_per_m"),
+                "total_weight_kg":          el.get("total_weight_kg") or el.get("weight_kg"),
+                "weld_length_per_joint_mm": el.get("weld_length_per_joint_mm"),
+                "weld_size_mm":             el.get("weld_size_mm"),
+                "weld_type":                el.get("weld_type"),
+                "surface_area_m2":          el.get("surface_area_m2"),
+                "is_existing":              el.get("is_existing", False),
+                "notes":                    el.get("notes"),
+                "confidence":               0.9,
+            })
+    if "bolts_and_plates" in data and isinstance(data["bolts_and_plates"], list):
+        for bp in data["bolts_and_plates"]:
+            desc = bp.get("item_description") or bp.get("description") or ""
+            dimensions.append({
+                "item_tag":     "BOLT",
+                "description":  desc,
+                "section_type": "plate" if "plate" in desc.lower() else "bolt",
+                "material_grade": bp.get("grade"),
+                "length_mm":    bp.get("length_mm"),
+                "quantity":     bp.get("quantity") or bp.get("qty") or 0,
+                "notes":        bp.get("notes"),
+                "confidence":   0.9,
+            })
+    data["dimensions"] = dimensions
+    return data
 
 
 class OpenAIProvider(AIProvider):
@@ -46,13 +89,13 @@ class OpenAIProvider(AIProvider):
         """Create chat completion with compatibility retries for model-specific params."""
         payload = dict(kwargs)
 
-        for _ in range(3):
+        for _ in range(4):
             try:
                 return await self.client.chat.completions.create(**payload)
             except Exception as e:
                 msg = str(e).lower()
 
-                # Newer OpenAI models may require max_completion_tokens instead of max_tokens.
+                # Newer OpenAI models: max_tokens → max_completion_tokens
                 if (
                     "unsupported parameter" in msg
                     and "max_tokens" in msg
@@ -62,11 +105,18 @@ class OpenAIProvider(AIProvider):
                     payload["max_completion_tokens"] = payload.pop("max_tokens")
                     continue
 
+                # Gemini / OpenRouter: max_completion_tokens → max_tokens
+                if (
+                    ("max_completion_tokens" in msg or "unknown field" in msg or "extra inputs" in msg)
+                    and "max_completion_tokens" in payload
+                ):
+                    payload["max_tokens"] = payload.pop("max_completion_tokens")
+                    continue
+
                 # Some models only allow default temperature=1 and reject custom values.
                 if (
                     "temperature" in msg
-                    and "unsupported value" in msg
-                    and "only the default (1) value is supported" in msg
+                    and ("unsupported value" in msg or "only the default" in msg)
                     and "temperature" in payload
                 ):
                     payload.pop("temperature", None)
@@ -74,7 +124,6 @@ class OpenAIProvider(AIProvider):
 
                 raise
 
-        # Should never be reached because the loop either returns or raises.
         raise RuntimeError("OpenAI compatibility retry loop exhausted")
 
     def _parse_json_response(self, content: str) -> dict:
@@ -177,7 +226,7 @@ class OpenAIProvider(AIProvider):
                 {"role": "user", "content": prompt}
             ],
             temperature=0.1,
-            max_completion_tokens=6000,
+            max_completion_tokens=16000,
             response_format={"type": "json_object"},
         )
 
@@ -235,48 +284,69 @@ class OpenAIProvider(AIProvider):
 
         content = response.choices[0].message.content
         data = self._parse_json_response(content)
+        data = _flatten_extraction(data)
+        return ExtractedDataResponse(**data)
 
-        # Flatten nested structures into 'dimensions'
-        dimensions = []
-        if "structural_elements" in data and isinstance(data["structural_elements"], list):
-            for el in data["structural_elements"]:
-                dimensions.append({
-                    "item_tag":                 el.get("support_tag") or el.get("tag") or el.get("item_tag"),
-                    "description":              el.get("item_description") or el.get("description"),
-                    "section_type":             el.get("section_type"),
-                    "section_designation":      el.get("section_designation"),
-                    "material_grade":           el.get("material_grade"),
-                    "length_mm":                el.get("length_mm") or el.get("l_mm"),
-                    "width_mm":                 el.get("width_mm") or el.get("w_mm"),
-                    "thickness_mm":             el.get("thickness_mm") or el.get("t_mm"),
-                    "od_mm":                    el.get("od_mm"),
-                    "quantity":                 el.get("quantity") or el.get("qty") or 1,
-                    "unit_weight_kg_per_m":     el.get("unit_weight_kg_per_m"),
-                    "total_weight_kg":          el.get("total_weight_kg") or el.get("weight_kg"),
-                    "weld_length_per_joint_mm": el.get("weld_length_per_joint_mm"),
-                    "weld_size_mm":             el.get("weld_size_mm"),
-                    "weld_type":                el.get("weld_type"),
-                    "surface_area_m2":          el.get("surface_area_m2"),
-                    "is_existing":              el.get("is_existing", False),
-                    "notes":                    el.get("notes"),
-                    "confidence":               0.9,
+    async def extract_from_multiple_files(
+        self,
+        files: List[Dict[str, Any]],
+        additional_context: Optional[str] = None,
+    ) -> ExtractedDataResponse:
+        """Render all PDFs to page images and send all files to OpenAI in a single vision call."""
+        import fitz
+        _IMG_MIMES = {
+            "jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png",
+            "gif": "image/gif", "webp": "image/webp",
+        }
+        context_note = f"\nAdditional context: {additional_context}" if additional_context else ""
+        filenames = ", ".join(f.get("filename", "") for f in files)
+        prompt = IMAGE_EXTRACTION_PROMPT.format(filename=filenames, context=context_note)
+        user_content: List[Any] = [{"type": "text", "text": prompt}]
+
+        for f in files:
+            fn = f.get("filename", "")
+            fb = f.get("bytes", b"")
+            ft = f.get("file_type", "")
+            ext = fn.rsplit(".", 1)[-1].lower() if "." in fn else ""
+            is_pdf = fn.lower().endswith(".pdf") or "pdf" in ft.lower()
+            is_img = ext in _IMG_MIMES
+
+            if is_pdf:
+                doc = fitz.open(stream=fb, filetype="pdf")
+                try:
+                    for page in doc:
+                        pix = page.get_pixmap(dpi=150)
+                        b64 = base64.standard_b64encode(pix.tobytes("png")).decode("utf-8")
+                        user_content.append({
+                            "type": "image_url",
+                            "image_url": {"url": f"data:image/png;base64,{b64}"},
+                        })
+                finally:
+                    doc.close()
+            elif is_img:
+                mime = _IMG_MIMES.get(ext, "image/png")
+                b64 = base64.standard_b64encode(fb).decode("utf-8")
+                user_content.append({
+                    "type": "image_url",
+                    "image_url": {"url": f"data:{mime};base64,{b64}"},
                 })
+            else:
+                text = fb.decode("utf-8", errors="replace")[:DOCUMENT_TEXT_CHAR_LIMIT]
+                user_content.append({"type": "text", "text": f"=== File: {fn} ===\n{text}"})
 
-        if "bolts_and_plates" in data and isinstance(data["bolts_and_plates"], list):
-            for bp in data["bolts_and_plates"]:
-                desc = bp.get("item_description") or bp.get("description") or ""
-                dimensions.append({
-                    "item_tag":     "BOLT",
-                    "description":  desc,
-                    "section_type": "plate" if "plate" in desc.lower() else "bolt",
-                    "material_grade": bp.get("grade"),
-                    "length_mm":    bp.get("length_mm"),
-                    "quantity":     bp.get("quantity") or bp.get("qty") or 0,
-                    "notes":        bp.get("notes"),
-                    "confidence":   0.9,
-                })
-
-        data["dimensions"] = dimensions
+        response = await self._chat_completions_create(
+            model=self.model_vision,
+            messages=[
+                {"role": "system", "content": DRAWING_READER_SYSTEM_PROMPT},
+                {"role": "user", "content": user_content},
+            ],
+            temperature=0.0,
+            max_completion_tokens=8192,
+            response_format={"type": "json_object"},
+        )
+        content = response.choices[0].message.content
+        data = self._parse_json_response(content)
+        data = _flatten_extraction(data)
         return ExtractedDataResponse(**data)
 
     async def parse_boq(

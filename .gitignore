@@ -65,6 +65,7 @@ yarn-error.log*
 # Temporary files
 *.tmp
 *.temp
+hwt_*.json
 
 # Python tooling caches
 .pytest_cache/

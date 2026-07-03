@@ -26,12 +26,16 @@ export default function Settings() {
   const [saving, setSaving] = useState(false)
   const [seeding, setSeeding] = useState(false)
   const [tab, setTab] = useState('rates')
+  const [aiInfo, setAiInfo] = useState<Record<string, string>>({})
+  const [companyInfo, setCompanyInfo] = useState<Record<string, string>>({})
 
   useEffect(() => {
     api.get('/settings').then(r => {
       setDefaults(r.data.rates || {})
       setRates(r.data.rate_details || [])
     }).catch(() => {}).finally(() => setLoading(false))
+    api.get('/ai/info').then(r => setAiInfo(r.data)).catch(() => {})
+    api.get('/company/info').then(r => setCompanyInfo(r.data)).catch(() => {})
   }, [])
 
   const updateRate = (key: string, val: string) => {
@@ -149,19 +153,19 @@ export default function Settings() {
             <div className="alert alert-info">
               <CheckCircle size={16} />
               <div style={{ fontSize: '0.8125rem' }}>
-                Currently using <strong>Groq API</strong> (llama-3.3-70b-versatile). To switch to Claude, set <code>AI_PROVIDER=claude</code> in your <code>.env</code> file.
+                Currently using <strong>{aiInfo.provider ? aiInfo.provider.charAt(0).toUpperCase() + aiInfo.provider.slice(1) : '…'}</strong>. Change <code>AI_PROVIDER</code> in your <code>.env</code> file to switch providers.
               </div>
             </div>
             {[
-              { label: 'AI Provider', key: 'AI_PROVIDER', placeholder: 'groq', help: 'groq or claude' },
-              { label: 'Groq API Key', key: 'GROQ_API_KEY', placeholder: 'gsk_...', help: 'Get from console.groq.com' },
-              { label: 'Large Model', key: 'GROQ_MODEL_LARGE', placeholder: 'llama-3.3-70b-versatile', help: 'Complex extraction and drafting' },
-              { label: 'Fast Model', key: 'GROQ_MODEL_FAST', placeholder: 'llama-3.1-8b-instant', help: 'Fast classification tasks' },
+              { label: 'Active Provider', value: aiInfo.provider },
+              { label: 'Primary Model', value: aiInfo.primary_model },
+              { label: 'Fast Model', value: aiInfo.fast_model },
+              { label: 'Vision Model', value: aiInfo.vision_model },
             ].map(f => (
-              <div key={f.key} className="form-group">
+              <div key={f.label} className="form-group">
                 <label className="form-label">{f.label}</label>
-                <input className="form-input" placeholder={f.placeholder} disabled style={{ background: 'var(--gray-50)', color: 'var(--text-muted)' }} defaultValue={f.placeholder} />
-                <span className="form-help">{f.help} — Edit in <code>.env</code> file</span>
+                <input className="form-input" value={f.value || '—'} disabled style={{ background: 'var(--gray-50)', color: 'var(--text-muted)' }} readOnly />
+                <span className="form-help">Read from <code>.env</code> file</span>
               </div>
             ))}
           </div>
@@ -178,17 +182,19 @@ export default function Settings() {
             </div>
             <div className="grid grid-cols-2 gap-4">
               {[
-                { label: 'Company Name', key: 'COMPANY_NAME' },
-                { label: 'Address', key: 'COMPANY_ADDRESS' },
-                { label: 'Phone', key: 'COMPANY_PHONE' },
-                { label: 'Email', key: 'COMPANY_EMAIL' },
-                { label: 'Website', key: 'COMPANY_WEBSITE' },
-                { label: 'Signatory Name', key: 'SIGNATORY_NAME' },
-                { label: 'Signatory Title', key: 'SIGNATORY_TITLE' },
+                { label: 'Company Name',    field: 'company_name' },
+                { label: 'Address',         field: 'company_address' },
+                { label: 'Phone',           field: 'company_phone' },
+                { label: 'Email',           field: 'company_email' },
+                { label: 'Website',         field: 'company_website' },
+                { label: 'Signatory Name',  field: 'signatory_name' },
+                { label: 'Signatory Title', field: 'signatory_title' },
               ].map(f => (
-                <div key={f.key} className="form-group">
+                <div key={f.field} className="form-group">
                   <label className="form-label">{f.label}</label>
-                  <input className="form-input" placeholder={`Set ${f.key} in .env`} disabled style={{ background: 'var(--gray-50)', color: 'var(--text-muted)' }} />
+                  <input className="form-input" value={companyInfo[f.field] || ''} disabled
+                    style={{ background: 'var(--gray-50)', color: 'var(--text-muted)' }} readOnly />
+                  <span className="form-help">Edit <code>COMPANY_*</code> in <code>.env</code></span>
                 </div>
               ))}
             </div>
