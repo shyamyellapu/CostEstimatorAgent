@@ -99,6 +99,9 @@ class Settings(BaseSettings):
     # App
     debug: bool = True
     log_level: str = "INFO"
+    log_dir: str = "logs"
+    log_max_bytes: int = 10 * 1024 * 1024  # 10 MB
+    log_backup_count: int = 5
 
     class Config:
         env_file = _ENV_FILE
