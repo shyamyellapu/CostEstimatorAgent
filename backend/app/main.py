@@ -75,9 +75,18 @@ async def lifespan(app: FastAPI):
     async with engine.connect() as conn:
         await conn.execute(text("SELECT 1"))
     logger.info("Database connectivity verified")
-    """Create all DB tables on startup."""
-    # async with engine.begin() as conn:
-    #     await conn.run_sync(lambda conn: Base.metadata.create_all(conn, checkfirst=True))
+
+    # Run Alembic migrations to ensure schema is up to date
+    try:
+        import asyncio
+        from alembic.config import Config as AlembicConfig
+        from alembic import command as alembic_command
+        from pathlib import Path as _APath
+        _alembic_cfg = AlembicConfig(str(_APath(__file__).parent.parent / "alembic.ini"))
+        await asyncio.to_thread(alembic_command.upgrade, _alembic_cfg, "head")
+        logger.info("Alembic migrations applied successfully")
+    except Exception as _exc:
+        logger.warning("Alembic migration failed (continuing): %s", _exc)
 
     # Ensure local storage directories exist
     Path(settings.local_storage_path).mkdir(parents=True, exist_ok=True)
