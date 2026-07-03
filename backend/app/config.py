@@ -53,9 +53,9 @@ class Settings(BaseSettings):
 
     # Google Gemini (OpenAI-compatible via AI Studio)
     gemini_api_key: str = ""
-    gemini_model: str = "gemini-3.5-flash"
-    gemini_model_fast: str = "gemini-3.5-flash"
-    gemini_model_vision: str = "gemini-3.5-flash"
+    gemini_model: str = "gemini-3.1-flash-lite"
+    gemini_model_fast: str = "gemini-3.1-flash-lite"
+    gemini_model_vision: str = "gemini-3.1-flash-lite"
 
     # Anthropic (Claude) — used as fallback when ai_provider=openai
     anthropic_api_key: str = ""

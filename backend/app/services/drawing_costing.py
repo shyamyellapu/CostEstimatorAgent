@@ -905,11 +905,21 @@ def compute_costing(extraction: dict, markup_pct: float = RATIOS["defaultMarkupP
 def _resolve_template_path() -> Path:
     """Resolve the Job Costing Sheet template to an absolute path."""
     configured = Path(settings.drawing_costing_template_path)
-    if configured.is_absolute():
+    if configured.is_absolute() and configured.exists():
         return configured
-    # __file__ is backend/app/services/drawing_costing.py → parents[3] = project root
-    project_root = Path(__file__).resolve().parents[3]
-    return project_root / configured
+    # Try multiple base directories in order:
+    #   parents[2] = backend/   (production: /tmp/<hash>/)
+    #   parents[3] = project root (local dev: CostEstimatorAgent/)
+    #   /home/site/wwwroot      (Azure wwwroot fallback)
+    candidates = [
+        Path(__file__).resolve().parents[2] / configured,
+        Path(__file__).resolve().parents[3] / configured,
+        Path("/home/site/wwwroot") / configured,
+    ]
+    for p in candidates:
+        if p.exists():
+            return p
+    return candidates[0]  # will raise FileNotFoundError with a clear path
 
 
 def generate_excel(costing: dict, project: dict, customer: dict) -> BytesIO:
