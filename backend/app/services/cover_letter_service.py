@@ -339,13 +339,13 @@ class CoverLetterService:
         heading_style = ParagraphStyle("CL_SectionHeading",
             parent=styles["Heading2"],
             fontSize=11, textColor=colors.HexColor("#1F3864"),
-            spaceAfter=4, spaceBefore=10)
+            spaceAfter=6, spaceBefore=16)
         body_style = ParagraphStyle("CL_Body",
             parent=styles["Normal"],
-            fontSize=10, leading=14, spaceAfter=4)
+            fontSize=10, leading=16, spaceAfter=8)
         bold_style = ParagraphStyle("CL_Bold",
             parent=styles["Normal"],
-            fontSize=10, leading=14, fontName="Helvetica-Bold")
+            fontSize=10, leading=16, fontName="Helvetica-Bold")
 
         # Switch to later-page template after the first page
         story = [NextPageTemplate('later')]
@@ -417,6 +417,7 @@ class CoverLetterService:
             for para in content.split("\n"):
                 if para.strip():
                     story.append(Paragraph(para.strip(), body_style))
+            story.append(Spacer(1, 0.25 * cm))
 
         # Closing lines
         story.append(Spacer(1, 0.8 * cm))

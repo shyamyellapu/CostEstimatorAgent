@@ -768,13 +768,17 @@ Return JSON (no preamble, null for any field not found):
 #   • Free-Issue materials added to prerequisites
 #   • Warranty (12 months) and liability cap are now mandatory sections
 #   • Bullet-point prohibition is explicit
-#   • Paragraph count per section is capped
-#   • Intro paragraph is limited to 2 sentences
+#   • Expanded to a comprehensive multi-page techno-commercial document —
+#     each section now requires several substantial paragraphs, and extra
+#     sections (company profile, methodology, QA/QC, HSE, documentation,
+#     terms & conditions) were added to produce a full 4–5 page letter.
 # =============================================================================
 
 COVER_LETTER_DRAFT_PROMPT = """
-Draft a professional techno-commercial covering letter for
-C&J Gulf Equipment Manufacturing LLC.
+Draft a comprehensive, detailed, professional techno-commercial covering
+letter for C&J Gulf Equipment Manufacturing LLC. This is a formal
+contractual document and should be thorough — aim for a full multi-page
+letter (approximately 4–5 printed pages), not a short summary.
 
 Quotation Data:
 {quotation_data}
@@ -788,11 +792,16 @@ Company Information:
 ═══════════════════════════════════════════════════════════════════
 MANDATORY FORMATTING RULES — NEVER VIOLATE
 ═══════════════════════════════════════════════════════════════════
+
 1.  PARAGRAPH FORMAT ONLY. No bullet points, no numbered lists inside
-    section content. Each section = bold heading + 1–2 prose paragraphs.
-2.  INTRODUCTION: Maximum 2 sentences. State (a) reference to
-    techno-commercial discussions and (b) fabrication-only scope.
-    Do NOT add methodology, alignment clauses, or extra paragraphs.
+    section content. Each section = bold heading + 2–3 substantial prose
+    paragraphs (roughly 70–110 words per paragraph). Shallow, one-line
+    sections are NOT acceptable — every section must read as a fully
+    developed part of a formal contractual letter.
+2.  INTRODUCTION: 4–6 sentences across 1–2 paragraphs. Reference the
+    techno-commercial discussions, the fabrication-only scope, a brief
+    note on C&J Gulf's suitability for the project, and an expression of
+    appreciation for the opportunity to quote.
 3.  PAYMENT TERMS: Must explicitly state ALL THREE:
     (a) Credit days: "[payment_days] Days Credit"
     (b) Invoice requirement: "from submission of [client] certified
@@ -810,22 +819,54 @@ MANDATORY FORMATTING RULES — NEVER VIOLATE
 6.  SALUTATION: Derive from contact_salutation in quotation_data.
     e.g. "Dear Mr. Khan," or "Dear Sir/Madam,"
 7.  WARRANTY: Always include — 12 months from date of dispatch,
-    limited to scope executed by C&J.
+    limited to scope executed by C&J. Elaborate on the warranty
+    process (claim notification, defect assessment, remedy) across
+    2–3 paragraphs.
 8.  LIABILITY CAP: Always include — total liability limited to
     contract value; no indirect, incidental, or consequential damages.
+9.  LENGTH TARGET: The complete letter (all sections combined) should
+    contain approximately 1,500–2,000 words in total so that it prints
+    to approximately 4–5 A4 pages. Favor 2–3 well-developed paragraphs
+    per section rather than padding with repetition. If unsure whether
+    a section is detailed enough, add another relevant, factual
+    paragraph rather than stopping early — but do not exceed roughly
+    2,200 words overall.
 
 ═══════════════════════════════════════════════════════════════════
 REQUIRED SECTIONS — IN THIS ORDER, ALL MANDATORY
 ═══════════════════════════════════════════════════════════════════
-  1.  introduction           — 2 sentences max
-  2.  scope                  — fabrication scope + inline exclusions
-  3.  drawings               — AFC drawings, variation for changes
-  4.  weight_assumptions     — quantity/weight basis, variation orders
-  5.  inspection             — NDT, shop acceptance finality
-  6.  delivery               — Ex-Works, risk transfer on loading
-  7.  schedule               — 4 prerequisites, auto-extension clause
-  8.  payment                — ALL THREE payment sub-fields + warranty + liability
-  9.  validity               — 30 days, contractual basis statement
+  1.  introduction           — company greeting + fabrication-only scope
+  2.  company_profile        — C&J Gulf background, certifications
+                               (ISO 9001, ISO 3834, AWS-qualified welding),
+                               years of experience, facility/yard capacity,
+                               core capabilities (structural steel, piping
+                               spools, skids, pressure vessels)
+  3.  scope                  — fabrication scope + inline exclusions
+  4.  execution_methodology  — end-to-end sequence: drawing review,
+                               material procurement & MTC verification,
+                               cutting/fit-up, welding (WPS/PQR), surface
+                               treatment, packing, dispatch, with quality
+                               checkpoints at each stage
+  5.  drawings               — AFC drawings, variation for changes
+  6.  weight_assumptions     — quantity/weight basis, variation orders
+  7.  quality_assurance      — QA/QC plan, ITP, material traceability,
+                               welding procedure qualification, calibrated
+                               inspection equipment
+  8.  hse                    — Health, Safety & Environment policy,
+                               PPE, toolbox talks, permit-to-work,
+                               compliance with client site HSE regulations
+  9.  inspection             — NDT, shop acceptance finality
+  10. delivery               — Ex-Works, risk transfer on loading
+  11. documentation          — final documentation dossier: MTC, NDT
+                               reports, dimensional reports, painting
+                               reports, as-built drawings, Manufacturing
+                               Data Record (MDR) / handover dossier
+  12. schedule               — 4 prerequisites, auto-extension clause
+  13. payment                — ALL THREE payment sub-fields + warranty + liability
+  14. terms_conditions       — force majeure, variation order procedure,
+                               dispute resolution, governing law (UAE),
+                               confidentiality of commercial information
+  15. validity               — 30 days, contractual basis statement
 
 ═══════════════════════════════════════════════════════════════════
 SIGNATORIES — ALWAYS INCLUDE ALL THREE
@@ -843,13 +884,19 @@ Return JSON (no preamble):
   "salutation": "Dear Mr./Mrs./Ms. [Name], or Dear Sir/Madam,",
   "sections": [
     {{"section_id": "introduction",      "title": "Introduction",                              "content": "..."}},
+    {{"section_id": "company_profile",   "title": "Company Profile & Capabilities",           "content": "..."}},
     {{"section_id": "scope",             "title": "Scope of Work — Fabrication Only",         "content": "..."}},
+    {{"section_id": "execution_methodology","title": "Project Execution Methodology",         "content": "..."}},
     {{"section_id": "drawings",          "title": "Drawings, Design Responsibility & AFC Status", "content": "..."}},
     {{"section_id": "weight_assumptions","title": "Quantity, Weight Basis & Commercial Assumptions", "content": "..."}},
+    {{"section_id": "quality_assurance", "title": "Quality Assurance & Quality Control Plan",  "content": "..."}},
+    {{"section_id": "hse",              "title": "Health, Safety & Environment (HSE)",         "content": "..."}},
     {{"section_id": "inspection",        "title": "Inspection, Testing & Final Acceptance",   "content": "..."}},
     {{"section_id": "delivery",          "title": "Delivery Terms & Risk Transfer",           "content": "..."}},
+    {{"section_id": "documentation",     "title": "Documentation & Handover",                  "content": "..."}},
     {{"section_id": "schedule",          "title": "Schedule & Prerequisites",                  "content": "..."}},
     {{"section_id": "payment",           "title": "Payment Terms, Warranty & Liability",      "content": "..."}},
+    {{"section_id": "terms_conditions",  "title": "General Terms & Conditions",                "content": "..."}},
     {{"section_id": "validity",          "title": "Validity & Contractual Basis",             "content": "..."}}
   ],
   "signatories": [
