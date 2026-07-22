@@ -339,13 +339,13 @@ class CoverLetterService:
         heading_style = ParagraphStyle("CL_SectionHeading",
             parent=styles["Heading2"],
             fontSize=11, textColor=colors.HexColor("#1F3864"),
-            spaceAfter=6, spaceBefore=16)
+            spaceAfter=4, spaceBefore=10)
         body_style = ParagraphStyle("CL_Body",
             parent=styles["Normal"],
-            fontSize=10, leading=16, spaceAfter=8)
+            fontSize=10, leading=14, spaceAfter=4)
         bold_style = ParagraphStyle("CL_Bold",
             parent=styles["Normal"],
-            fontSize=10, leading=16, fontName="Helvetica-Bold")
+            fontSize=10, leading=14, fontName="Helvetica-Bold")
 
         # Switch to later-page template after the first page
         story = [NextPageTemplate('later')]
@@ -417,7 +417,6 @@ class CoverLetterService:
             for para in content.split("\n"):
                 if para.strip():
                     story.append(Paragraph(para.strip(), body_style))
-            story.append(Spacer(1, 0.25 * cm))
 
         # Closing lines
         story.append(Spacer(1, 0.8 * cm))
@@ -441,7 +440,7 @@ class CoverLetterService:
 
         bilal_img  = _sig_img("BilalAhmed Signature.jpg")
         datta_img  = _sig_img("Datta C.Sawant Signature.jpg")
-        subash_img = _sig_img("subash Valrani Signature.jpg")
+        arjun_img  = _sig_img("arjun-sign-cropped.png")
 
         # Bilal: left-aligned signature, name/title
         story.append(Spacer(1, 10))  # BILAL_GAP
@@ -450,13 +449,13 @@ class CoverLetterService:
         story.append(Paragraph("Cost &amp; Estimation Engineer.", body_style))
         story.append(Spacer(1, 14))  # DATTA_GAP
 
-        # Datta + Subash side-by-side
+        # Datta + Arjun side-by-side
         half = frame_width / 2
         sig_table = Table(
             [
-                [datta_img, subash_img],
+                [datta_img, arjun_img],
                 [Paragraph("<b>Datta C. Sawant</b>", bold_style),
-                 Paragraph("<b>Subash Valrani</b>", bold_style)],
+                 Paragraph("<b>Arjun Gopakumar</b>", bold_style)],
                 [Paragraph("Sr. Mechanical Engineer", body_style),
                  Paragraph("Business Unit Head", body_style)],
             ],
