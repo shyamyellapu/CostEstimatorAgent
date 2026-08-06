@@ -85,9 +85,17 @@ from app.core.exceptions import AppError
 async def lifespan(app: FastAPI):
     """Validate database connectivity and prepare runtime storage."""
     logger.info("Starting Cost Estimator API")
-    async with engine.connect() as conn:
-        await conn.execute(text("SELECT 1"))
-    logger.info("Database connectivity verified")
+    # Bounded + non-fatal: an unreachable DB (e.g. firewall blocking the App Service's
+    # outbound IP) must not hang the sole gunicorn worker forever at startup — that
+    # leaves every request (including CORS preflights) returning a bare 503, which the
+    # browser then misreports as a CORS failure instead of the real connectivity issue.
+    try:
+        import asyncio as _asyncio
+        async with engine.connect() as conn:
+            await _asyncio.wait_for(conn.execute(text("SELECT 1")), timeout=10)
+        logger.info("Database connectivity verified")
+    except Exception:
+        logger.exception("Database connectivity check failed at startup (continuing)")
 
     # Run Alembic migrations to ensure schema is up to date
     try:
