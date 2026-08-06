@@ -1,6 +1,5 @@
 """Application settings from environment variables."""
 from pathlib import Path
-from pydantic import field_validator
 from pydantic_settings import BaseSettings
 from typing import List
 
@@ -95,23 +94,19 @@ class Settings(BaseSettings):
     task_worker_max_concurrent: int = 3
 
     # CORS
-    allowed_origins: List[str] = [
-        "http://localhost:5173",
-        "http://127.0.0.1:5173",
-        "http://localhost:3000",
-        "http://127.0.0.1:3000",
-        "http://127.0.0.1:8000",
-        "https://red-hill-090bbae00.7.azurestaticapps.net",
-    ]
+    # NOTE: kept as a plain str (not List[str]) — pydantic-settings' EnvSettingsSource tries to
+    # json.loads() env values for List[...] fields *before* any field_validator runs, so a plain
+    # comma-separated ALLOWED_ORIGINS value (e.g. set via Azure App Service > Configuration) makes
+    # the whole app fail to import with a SettingsError, crash-looping every gunicorn worker.
+    allowed_origins: str = (
+        "http://localhost:5173,http://127.0.0.1:5173,http://localhost:3000,"
+        "http://127.0.0.1:3000,http://127.0.0.1:8000,"
+        "https://red-hill-090bbae00.7.azurestaticapps.net"
+    )
 
-    @field_validator("allowed_origins", mode="before")
-    @classmethod
-    def _split_allowed_origins(cls, v):
-        # Accept either a JSON array or a plain comma-separated string (the latter is what most
-        # people naturally type into Azure App Service > Environment variables).
-        if isinstance(v, str) and not v.strip().startswith("["):
-            return [origin.strip() for origin in v.split(",") if origin.strip()]
-        return v
+    @property
+    def allowed_origins_list(self) -> List[str]:
+        return [origin.strip() for origin in self.allowed_origins.split(",") if origin.strip()]
 
     # App
     debug: bool = True
