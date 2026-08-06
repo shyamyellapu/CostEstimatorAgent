@@ -1035,7 +1035,14 @@ Return exactly this structure:
 LLAMAPARSE_BOQ_EXTRACTION_PROMPT = """
 You are a structural fabrication cost estimator. Extract these 5 items from the BOQ/MTO document below.
 
-1. Total Structural Steel Material (kg) — labels: "Structural Steel", "Total Steel Weight", "Grand Total", "Mild Steel". Sum subtotals if needed.
+1. Total Structural Steel Material (kg) — labels: "Structural Steel", "Total Steel Weight", "Grand Total", "Mild Steel".
+   - CRITICAL: Do NOT sum subtotals yourself. Instead, list every individual member/subtotal weight row you find
+     as a separate entry in "line_items" (each with its own description and weight_kg exactly as printed).
+     The backend will add these up deterministically — you must never perform the addition.
+   - Also set "weight_kg" to your best single read of the final/grand-total row if one is explicitly printed
+     (e.g. a "TOTAL" or "GRAND TOTAL" row). Set it to 0.0 if no single total row exists — the line_items sum will be used.
+   - Never list the same row twice and never include a printed "TOTAL"/"GRAND TOTAL" row inside "line_items"
+     (only individual member/subtotal rows belong there — the grand total goes in "weight_kg").
 2. Handrails (kg) — labels: "Handrails", "Guardrail", "GALVANIZING WORK", "Balustrade", "Railing", "Hand Rail". "Galvanizing Work" = handrails.
    - If weight_kg is stated directly, use it.
    - If only linear meters (m) and pipe size are given, calculate: weight_kg = linear_m × kg_per_m.
@@ -1051,5 +1058,6 @@ DOCUMENT:
 {text}
 
 Return ONLY valid JSON, no markdown:
-{{"structural_steel":{{"weight_kg":0.0,"source_description":"","confidence":0.0}},"handrails":{{"weight_kg":null,"linear_m":null,"source_description":null,"confidence":0.0}},"grating":{{"weight_kg":null,"area_m2":null,"source_description":null,"confidence":0.0}},"bolts_m20x90":{{"found":false,"qty":null,"description":"","other_bolts":[]}},"paint_material":{{"litres":0.0,"surface_area_m2":null,"paint_spec":"","paint_calc_method":"stated_directly|calculated_from_area|calculated_from_steel_weight","confidence":0.0}},"overall_confidence":0.0,"summary":""}}
+{{"structural_steel":{{"weight_kg":0.0,"line_items":[{{"description":"","weight_kg":0.0}}],"source_description":"","confidence":0.0}},"handrails":{{"weight_kg":null,"linear_m":null,"source_description":null,"confidence":0.0}},"grating":{{"weight_kg":null,"area_m2":null,"source_description":null,"confidence":0.0}},"bolts_m20x90":{{"found":false,"qty":null,"description":"","other_bolts":[]}},"paint_material":{{"litres":0.0,"surface_area_m2":null,"paint_spec":"","paint_calc_method":"stated_directly|calculated_from_area|calculated_from_steel_weight","confidence":0.0}},"overall_confidence":0.0,"summary":""}}
 """
+

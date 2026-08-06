@@ -282,8 +282,42 @@ async def analyse_drawing(
 
     # 1. Structural Steel
     ss = extracted.get("structural_steel") or {}
-    ss_kg = float(ss.get("weight_kg") or 0)
+    ss_kg_llm = float(ss.get("weight_kg") or 0)
     ss_conf = float(ss.get("confidence") or 0.8)
+
+    # Deterministic reconciliation: never trust the LLM's own arithmetic for a
+    # multi-row sum — re-add the individual line items it found in Python and
+    # prefer that total when it disagrees with the LLM's stated grand total.
+    weight_flags: List[Dict[str, Any]] = []
+    ss_line_items = [li for li in (ss.get("line_items") or []) if isinstance(li, dict)]
+    ss_kg_summed = round(sum(float(li.get("weight_kg") or 0) for li in ss_line_items), 2)
+
+    if ss_kg_summed > 0 and ss_kg_llm > 0:
+        discrepancy = abs(ss_kg_summed - ss_kg_llm) / max(ss_kg_summed, ss_kg_llm)
+        if discrepancy > 0.15:
+            logger.warning(
+                "Job %s: structural steel weight mismatch — LLM total=%.2f kg vs "
+                "Python-summed line items=%.2f kg (%.0f%% diff). Using summed value.",
+                job_id, ss_kg_llm, ss_kg_summed, discrepancy * 100,
+            )
+            weight_flags.append({
+                "field": "structural_steel.weight_kg",
+                "message": (
+                    f"AI reported {ss_kg_llm:.1f} kg but the individual line items "
+                    f"it extracted sum to {ss_kg_summed:.1f} kg — using the summed value. "
+                    "Please verify against the drawing."
+                ),
+                "severity": "high",
+            })
+            ss_kg = ss_kg_summed
+            ss_conf = min(ss_conf, 0.5)
+        else:
+            ss_kg = ss_kg_summed
+    elif ss_kg_summed > 0:
+        ss_kg = ss_kg_summed
+    else:
+        ss_kg = ss_kg_llm
+
     if ss_kg > 0:
         _add_bom(
             description=f"Structural Steel Material — {ss.get('source_description', '')}",
@@ -381,6 +415,8 @@ async def analyse_drawing(
     costing = _compute_costing(total_steel_kg, markup_pct / 100.0)
 
     overall_confidence = float(extracted.get("overall_confidence") or 0.8)
+    if weight_flags:
+        overall_confidence = min(overall_confidence, 0.5)
 
     # Store quantity result
     qr = QuantityResult(
@@ -409,6 +445,7 @@ async def analyse_drawing(
             "provider": ai.provider_name,
             "paint_litres": pm_litres,
             "bolts_found": bl.get("found", False),
+            "weight_flags": weight_flags,
         },
     ))
     await db.commit()
@@ -426,7 +463,7 @@ async def analyse_drawing(
         "costing": costing,
         "overall_confidence": overall_confidence,
         "summary": extracted.get("summary") or f"Extracted {len(bom_items_out)} items. Steel: {round(total_steel_kg, 1)} kg.",
-        "flags": [],
+        "flags": weight_flags,
         "extracted_detail": {
             "structural_steel": extracted.get("structural_steel"),
             "handrails": extracted.get("handrails"),
@@ -437,6 +474,133 @@ async def analyse_drawing(
         "status": "pending_review",
         "can_generate_excel": True,
         "markup_pct": markup_pct,
+    }
+
+
+# ---------------------------------------------------------------------------
+# POST /manual-entry
+# ---------------------------------------------------------------------------
+class ManualBomEntry(BaseModel):
+    structural_steel_kg: float = Field(..., gt=0, description="Total structural steel weight in kg")
+    handrail_kg: Optional[float] = Field(None, ge=0)
+    grating_kg: Optional[float] = Field(None, ge=0)
+    bolts_qty: Optional[float] = Field(None, ge=0, description="Number of M20x90 bolts")
+    paint_litres: Optional[float] = Field(None, ge=0)
+    markup_pct: float = Field(34.0, ge=0, le=80)
+    project_name: Optional[str] = None
+    client_name: Optional[str] = None
+    drawing_number: Optional[str] = None
+
+
+@router.post("/manual-entry")
+async def manual_entry(body: ManualBomEntry, db: AsyncSession = Depends(db_session)):
+    """
+    Fallback path for when LlamaParse/LLM extraction fails or returns no usable data.
+    User supplies the 5 BOM quantities directly; costing/Excel pipeline proceeds identically.
+    """
+    job = Job(
+        job_number=_gen_job_number(),
+        client_name=body.client_name,
+        project_name=body.project_name,
+        project_ref=body.drawing_number or "MANUAL",
+        status="pending_review",
+    )
+    db.add(job)
+    await db.flush()
+    job_id = str(job.id)
+
+    def _add_bom(description: str, category: str, weight_kg: float | None, qty: float | None) -> None:
+        db.add(BomItem(
+            job_id=job_id,
+            description=description,
+            category=category,
+            qty=qty,
+            total_weight_kg=weight_kg,
+            confidence=1.0,
+            review_required=False,
+        ))
+
+    _add_bom("Structural Steel Material — manual entry", "structural_steel", body.structural_steel_kg, None)
+    if body.handrail_kg:
+        _add_bom("Handrails — manual entry", "handrail", body.handrail_kg, None)
+    if body.grating_kg:
+        _add_bom("Grating — manual entry", "grating", body.grating_kg, None)
+    if body.bolts_qty:
+        _add_bom("M20×90 Long Bolts HEX HD & Nut to BS 4190 Gr.8.8", "bolt", None, body.bolts_qty)
+    if body.paint_litres:
+        _add_bom("Paint Material — manual entry", "paint", None, body.paint_litres)
+
+    await db.flush()
+
+    bom_result = await db.execute(select(BomItem).where(BomItem.job_id == job_id))
+    bom_items_out = [_bom_item_to_dict(i) for i in bom_result.scalars().all()]
+
+    db.add(QuantityResult(
+        job_id=job_id,
+        category="structural_steel",
+        quantity_unit="kg",
+        quantity_value=body.structural_steel_kg,
+        weight_kg=body.structural_steel_kg,
+        source="manual_entry",
+        calculation_method="manual_entry",
+        confidence=1.0,
+        is_approved=False,
+    ))
+
+    costing = _compute_costing(body.structural_steel_kg, body.markup_pct / 100.0)
+    if body.handrail_kg:
+        costing["handrail_kg"] = round(body.handrail_kg, 2)
+    if body.grating_kg:
+        costing["grating_kg"] = round(body.grating_kg, 2)
+    if body.bolts_qty:
+        costing["bolts"] = int(body.bolts_qty)
+    if body.paint_litres:
+        costing["paint_litres"] = round(body.paint_litres, 3)
+
+    db.add(CostingSheet(
+        job_id=job_id,
+        line_items_json=costing,
+        totals_json=costing,
+        rates_snapshot_json={"markup_pct": body.markup_pct},
+        audit_trail_json=[{
+            "event": "manual_entry_created",
+            "created_at": datetime.utcnow().isoformat(),
+        }],
+    ))
+
+    job.status = "pending_review"
+    job.total_weight_kg = body.structural_steel_kg
+    job.total_cost = costing["grand_total"]
+    job.selling_price = costing["selling_price"]
+
+    db.add(AuditLog(
+        job_id=job_id,
+        action="manual_entry_created",
+        details_json={
+            "bom_items": len(bom_items_out),
+            "total_steel_kg": body.structural_steel_kg,
+        },
+    ))
+    await db.commit()
+
+    return {
+        "job_id": job_id,
+        "job_number": job.job_number,
+        "project_information": {
+            "project_name": body.project_name,
+            "client_name": body.client_name,
+            "drawing_number": body.drawing_number,
+        },
+        "bom_items": bom_items_out,
+        "total_steel_kg": body.structural_steel_kg,
+        "costing": costing,
+        "overall_confidence": 1.0,
+        "summary": f"Manual entry. Steel: {body.structural_steel_kg} kg.",
+        "flags": [],
+        "extracted_detail": {},
+        "status": "pending_review",
+        "can_generate_excel": True,
+        "markup_pct": body.markup_pct,
     }
 
 

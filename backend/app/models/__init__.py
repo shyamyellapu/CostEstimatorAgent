@@ -284,17 +284,23 @@ class Role(Base):
     id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=gen_uuid_obj)
     name: Mapped[str] = mapped_column(String(100), unique=True, index=True)
     description: Mapped[Optional[str]] = mapped_column(Text)
-    is_active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    is_system_role: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     updated_at: Mapped[Optional[datetime]] = mapped_column(DateTime, onupdate=datetime.utcnow)
+
+    permissions: Mapped[List["Permission"]] = relationship("Permission", secondary="role_permissions", lazy="selectin")
+    users: Mapped[List["User"]] = relationship("User", back_populates="role", lazy="select")
 
 
 class Permission(Base):
     __tablename__ = "permissions"
 
     id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=gen_uuid_obj)
-    name: Mapped[str] = mapped_column(String(120), unique=True, index=True)
+    code: Mapped[str] = mapped_column(String(120), unique=True, index=True)
+    name: Mapped[str] = mapped_column(String(200))
     description: Mapped[Optional[str]] = mapped_column(Text)
+    resource: Mapped[Optional[str]] = mapped_column(String(100), index=True)
+    action: Mapped[Optional[str]] = mapped_column(String(50), index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 
@@ -306,45 +312,123 @@ role_permissions = Table(
 )
 
 
-user_roles = Table(
-    "user_roles",
-    Base.metadata,
-    Column("user_id", PGUUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), primary_key=True),
-    Column("role_id", PGUUID(as_uuid=True), ForeignKey("roles.id", ondelete="CASCADE"), primary_key=True),
-)
-
-
-class AppUser(Base):
+class User(Base):
     __tablename__ = "users"
 
     id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=gen_uuid_obj)
     company_id: Mapped[Optional[uuid.UUID]] = mapped_column(PGUUID(as_uuid=True), ForeignKey("companies.id", ondelete="SET NULL"), nullable=True, index=True)
     email: Mapped[str] = mapped_column(String(255), unique=True, index=True)
+    username: Mapped[str] = mapped_column(String(100), unique=True, index=True)
     full_name: Mapped[str] = mapped_column(String(255), index=True)
-    password_hash: Mapped[str] = mapped_column(String(255))
+    hashed_password: Mapped[str] = mapped_column(String(255))
+    role_id: Mapped[Optional[uuid.UUID]] = mapped_column(PGUUID(as_uuid=True), ForeignKey("roles.id", ondelete="SET NULL"), nullable=True, index=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
-    is_superuser: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
-    last_login_at: Mapped[Optional[datetime]] = mapped_column(DateTime)
+    is_verified: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    failed_login_attempts: Mapped[int] = mapped_column(Integer, default=0)
+    locked_until: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    password_changed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    last_login: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     profile_settings_json: Mapped[Optional[dict]] = mapped_column(json_type())
     preferences_json: Mapped[Optional[dict]] = mapped_column(json_type())
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
     updated_at: Mapped[Optional[datetime]] = mapped_column(DateTime, onupdate=datetime.utcnow)
 
-    roles: Mapped[List["Role"]] = relationship("Role", secondary=user_roles, lazy="selectin")
+    role: Mapped[Optional["Role"]] = relationship("Role", back_populates="users", lazy="selectin")
+
+    __table_args__ = (
+        Index("idx_user_active_role", "is_active", "role_id"),
+    )
 
 
 class RefreshToken(Base):
+    """Refresh tokens are single-use and chained via token_family_id for rotation + replay detection.
+
+    Raw token values are NEVER persisted — only their SHA-256 hash (token_hash).
+    """
     __tablename__ = "refresh_tokens"
 
     id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=gen_uuid_obj)
     user_id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), index=True)
-    token_hash: Mapped[str] = mapped_column(String(255), unique=True, index=True)
-    jti: Mapped[str] = mapped_column(String(120), unique=True, index=True)
+    session_id: Mapped[Optional[uuid.UUID]] = mapped_column(PGUUID(as_uuid=True), ForeignKey("user_sessions.id", ondelete="SET NULL"), nullable=True, index=True)
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    token_family_id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), index=True, default=gen_uuid_obj)
+    parent_token_id: Mapped[Optional[uuid.UUID]] = mapped_column(PGUUID(as_uuid=True), ForeignKey("refresh_tokens.id", ondelete="SET NULL"), nullable=True)
+    replaced_by_token_id: Mapped[Optional[uuid.UUID]] = mapped_column(PGUUID(as_uuid=True), ForeignKey("refresh_tokens.id", ondelete="SET NULL"), nullable=True)
+    issued_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     expires_at: Mapped[datetime] = mapped_column(DateTime, index=True)
-    revoked_at: Mapped[Optional[datetime]] = mapped_column(DateTime)
-    device_info_json: Mapped[Optional[dict]] = mapped_column(json_type())
-    ip_address: Mapped[Optional[str]] = mapped_column(String(100))
+    revoked_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    revocation_reason: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    is_revoked: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    created_by_ip: Mapped[Optional[str]] = mapped_column(String(100))
+    last_used_ip: Mapped[Optional[str]] = mapped_column(String(100))
+    user_agent: Mapped[Optional[str]] = mapped_column(String(1000))
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+
+    __table_args__ = (
+        Index("idx_refresh_family", "token_family_id"),
+        Index("idx_refresh_user_expires", "user_id", "expires_at"),
+    )
+
+
+class UserSession(Base):
+    """Represents one logged-in device/browser session, tied 1:1 with the current refresh token."""
+    __tablename__ = "user_sessions"
+
+    id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=gen_uuid_obj)
+    user_id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    current_refresh_token_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("refresh_tokens.id", ondelete="SET NULL", use_alter=True, name="fk_user_sessions_current_refresh_token"),
+        nullable=True,
+    )
+    ip_address: Mapped[Optional[str]] = mapped_column(String(100))
+    user_agent: Mapped[Optional[str]] = mapped_column(String(1000))
+    device_name: Mapped[Optional[str]] = mapped_column(String(200))
+    browser: Mapped[Optional[str]] = mapped_column(String(100))
+    operating_system: Mapped[Optional[str]] = mapped_column(String(100))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    last_activity_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime, index=True)
+    revoked_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    revocation_reason: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+
+    __table_args__ = (
+        Index("idx_session_user_active", "user_id", "is_active"),
+    )
+
+
+class AuthAuditLog(Base):
+    """Immutable audit trail for all authentication and authorization events."""
+    __tablename__ = "auth_audit_logs"
+
+    id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=gen_uuid_obj)
+    user_id: Mapped[Optional[uuid.UUID]] = mapped_column(PGUUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
+    action: Mapped[str] = mapped_column(String(100), index=True)
+    status: Mapped[str] = mapped_column(String(20), default="success", index=True)
+    ip_address: Mapped[Optional[str]] = mapped_column(String(100))
+    user_agent: Mapped[Optional[str]] = mapped_column(String(1000))
+    request_id: Mapped[Optional[str]] = mapped_column(String(100), index=True)
+    timestamp: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    metadata_json: Mapped[Optional[dict]] = mapped_column(json_type())
+
+    __table_args__ = (
+        Index("idx_auth_audit_user_ts", "user_id", "timestamp"),
+        Index("idx_auth_audit_action_ts", "action", "timestamp"),
+    )
+
+
+class PasswordResetToken(Base):
+    """One-time password-reset tokens. Only the SHA-256 hash of the raw token is ever stored."""
+    __tablename__ = "password_reset_tokens"
+
+    id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=gen_uuid_obj)
+    user_id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime, index=True)
+    used_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    requested_ip: Mapped[Optional[str]] = mapped_column(String(100))
 
 
 class LoginHistory(Base):

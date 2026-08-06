@@ -8,7 +8,7 @@ import logging
 import time
 import traceback
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -61,11 +61,24 @@ from app.models import (
     GmailCredential, RFQEmail, RFQAttachment, RFQRecord,
     RFQLineItem, ValidationResult, ExtractionReview, TaskQueue, MaterialMaster,
 )
+from app.models import (
+    Role, Permission, User, RefreshToken, UserSession,
+    AuthAuditLog, PasswordResetToken,
+)
 
 from app.api.routes import estimate, cover_letter as cl_routes, chat, boq, drawing, history, settings as settings_routes
 from app.api.routes import drawing_costing as drawing_costing_routes
 from app.api.routes import rfq as rfq_routes
 from app.api.routes import gmail as gmail_routes
+from app.api.routes import auth as auth_routes
+from app.api.routes import admin_users as admin_users_routes
+from app.api.routes import sessions as admin_sessions_routes
+from app.api.routes import audit_logs as audit_logs_routes
+from app.api.dependencies.auth import get_current_user
+from app.api.dependencies.permissions import require_permission
+from app.middleware.request_id import RequestIDMiddleware
+from app.middleware.security_headers import SecurityHeadersMiddleware
+from app.core.exceptions import AppError
 
 
 @asynccontextmanager
@@ -87,6 +100,21 @@ async def lifespan(app: FastAPI):
         logger.info("Alembic migrations applied successfully")
     except Exception as _exc:
         logger.warning("Alembic migration failed (continuing): %s", _exc)
+
+    # One-time, idempotent RBAC system-account bootstrap (admin/manager/estimator). No-op unless
+    # BOOTSTRAP_RBAC_USERS=true. A Postgres advisory lock serializes concurrent Gunicorn workers.
+    if settings.bootstrap_rbac_users:
+        try:
+            from app.database import AsyncSessionLocal
+            from app.services.rbac_bootstrap_service import bootstrap_rbac_users
+            async with AsyncSessionLocal() as _db:
+                _summary = await bootstrap_rbac_users(_db, user_agent="startup-bootstrap")
+            logger.info(
+                "RBAC bootstrap on startup: created=%d updated_roles=%d skipped=%d",
+                _summary.created, _summary.updated_roles, _summary.skipped,
+            )
+        except Exception:
+            logger.exception("RBAC bootstrap on startup failed (continuing)")
 
     # Ensure local storage directories exist
     Path(settings.local_storage_path).mkdir(parents=True, exist_ok=True)
@@ -110,6 +138,12 @@ async def lifespan(app: FastAPI):
         settings.task_worker_max_concurrent,
     )
 
+    # Background auth-data cleanup (expired refresh tokens, password-reset tokens, stale
+    # sessions, old audit logs). See app.tasks.auth_cleanup module docstring for the
+    # multi-worker/production scheduling caveat.
+    from app.tasks.auth_cleanup import start_scheduler as start_auth_cleanup_scheduler
+    start_auth_cleanup_scheduler()
+
     yield
 
 
@@ -128,9 +162,12 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.allowed_origins,
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type", "X-CSRF-Token", "X-Request-ID"],
+    expose_headers=["X-Request-ID"],
 )
+app.add_middleware(SecurityHeadersMiddleware)
+app.add_middleware(RequestIDMiddleware)
 
 
 @app.middleware("http")
@@ -185,9 +222,27 @@ async def log_requests(request: Request, call_next):
     return response
 
 
+@app.exception_handler(AppError)
+async def app_error_handler(request: Request, exc: AppError):
+    """Consistent error envelope for all application/auth errors — never leaks internals."""
+    request_id = getattr(request.state, "request_id", None)
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={"error": {"code": exc.code, "message": exc.message, "request_id": request_id}},
+        headers=exc.headers,
+    )
+
+
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
-    """Catch-all for unhandled exceptions — log full traceback and return 500."""
+    """Catch-all for unhandled exceptions — log full traceback and return 500.
+
+    NOTE: FastAPI/Starlette registers handlers for the bare `Exception` class on the outermost
+    `ServerErrorMiddleware`, which sits OUTSIDE `CORSMiddleware`. That means a response built here
+    never passes back through `CORSMiddleware` and won't get `Access-Control-Allow-Origin`
+    headers — the browser then reports a misleading "blocked by CORS policy" error that hides the
+    real 500. We add the CORS headers manually so the frontend can actually see the error.
+    """
     logger.critical(
         "unhandled_exception method=%s path=%s exc_type=%s exc=%s\n%s",
         request.method,
@@ -196,22 +251,42 @@ async def global_exception_handler(request: Request, exc: Exception):
         exc,
         traceback.format_exc(),
     )
+    headers = {}
+    origin = request.headers.get("origin")
+    if origin and origin in settings.allowed_origins:
+        headers["Access-Control-Allow-Origin"] = origin
+        headers["Access-Control-Allow-Credentials"] = "true"
+        headers["Vary"] = "Origin"
     return JSONResponse(
         status_code=500,
         content={"detail": "Internal server error. Please check server logs."},
+        headers=headers,
     )
 
 # API Routers
+app.include_router(auth_routes.router,            prefix="/api/auth",           tags=["Auth"])
+app.include_router(admin_users_routes.router,     prefix="/api/admin",         tags=["Admin"])
+app.include_router(admin_sessions_routes.router,  prefix="/api/admin",         tags=["Admin"])
+app.include_router(audit_logs_routes.router,      prefix="/api/admin",         tags=["Admin"])
+
 app.include_router(estimate.router,       prefix="/api/estimate",      tags=["Estimate"])
-app.include_router(cl_routes.router,      prefix="/api/cover-letter",  tags=["Cover Letter"])
-app.include_router(chat.router,           prefix="/api/chat",          tags=["Chat"])
-app.include_router(boq.router,            prefix="/api/boq",           tags=["BOQ"])
-app.include_router(drawing.router,        prefix="/api/drawing",       tags=["Drawing"])
-app.include_router(history.router,        prefix="/api/history",       tags=["History"])
+app.include_router(cl_routes.router,      prefix="/api/cover-letter",  tags=["Cover Letter"],
+                   dependencies=[Depends(require_permission("cover_letters.generate"))])
+app.include_router(chat.router,           prefix="/api/chat",          tags=["Chat"],
+                   dependencies=[Depends(get_current_user)])
+app.include_router(boq.router,            prefix="/api/boq",           tags=["BOQ"],
+                   dependencies=[Depends(require_permission("boq.parse"))])
+app.include_router(drawing.router,        prefix="/api/drawing",       tags=["Drawing"],
+                   dependencies=[Depends(require_permission("drawings.process"))])
+app.include_router(history.router,        prefix="/api/history",       tags=["History"],
+                   dependencies=[Depends(require_permission("job_history.read"))])
 app.include_router(settings_routes.router,    prefix="/api/settings",         tags=["Settings"])
-app.include_router(drawing_costing_routes.router, prefix="/api/drawing-costing", tags=["Drawing Costing"])
-app.include_router(rfq_routes.router,             prefix="/api/rfq",            tags=["RFQ"])
-app.include_router(gmail_routes.router,           prefix="/api/gmail",          tags=["Gmail"])
+app.include_router(drawing_costing_routes.router, prefix="/api/drawing-costing", tags=["Drawing Costing"],
+                   dependencies=[Depends(require_permission("drawings.process"))])
+app.include_router(rfq_routes.router,             prefix="/api/rfq",            tags=["RFQ"],
+                   dependencies=[Depends(require_permission("rfq.read"))])
+app.include_router(gmail_routes.router,           prefix="/api/gmail",          tags=["Gmail"],
+                   dependencies=[Depends(require_permission("rfq.manage"))])
 
 # Static files for local storage
 storage_path = Path(settings.local_storage_path)

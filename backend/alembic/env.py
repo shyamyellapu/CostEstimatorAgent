@@ -23,6 +23,10 @@ from app.models import (
     Job, UploadedFile, ExtractedData, CostingSheet, 
     Quotation, CoverLetter, RateConfiguration, ChatHistory, AuditLog
 )
+from app.models import (
+    Role, Permission, User, RefreshToken, UserSession,
+    AuthAuditLog, PasswordResetToken, Company,
+)
 
 # this is the Alembic Config object
 config = context.config

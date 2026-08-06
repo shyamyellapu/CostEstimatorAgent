@@ -1,4 +1,4 @@
-import { useCallback, useState } from 'react'
+import { useCallback, useState, type Dispatch, type SetStateAction, type ChangeEvent } from 'react'
 import { useDropzone } from 'react-dropzone'
 import { api } from '../api/client'
 import {
@@ -129,6 +129,113 @@ function ProcessingProgress({ steps }: { steps: Step[] }) {
 
 type Tab = 'bom' | 'costing' | 'summary'
 
+type ManualForm = {
+  structural_steel_kg: string
+  handrail_kg: string
+  grating_kg: string
+  bolts_qty: string
+  paint_litres: string
+  project_name: string
+  client_name: string
+  drawing_number: string
+}
+
+function ManualEntryPanel({
+  manualForm, setManualForm, markupPct, setMarkupPct, onSubmit, onBack, loading,
+}: {
+  manualForm: ManualForm
+  setManualForm: Dispatch<SetStateAction<ManualForm>>
+  markupPct: number
+  setMarkupPct: (n: number) => void
+  onSubmit: () => void
+  onBack: () => void
+  loading: boolean
+}) {
+  const update = (field: keyof ManualForm) => (e: ChangeEvent<HTMLInputElement>) =>
+    setManualForm(prev => ({ ...prev, [field]: e.target.value }))
+
+  const canSubmit = parseFloat(manualForm.structural_steel_kg) > 0 && !loading
+
+  return (
+    <div className="card" style={{ marginTop: '1.5rem' }}>
+      <div className="card-header"><h3 className="card-title">Manual BOQ Entry</h3></div>
+      <div className="card-body" style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+
+        <div className="form-group">
+          <label className="form-label">Structural Steel Total Weight (kg) *</label>
+          <input
+            type="number" min={0} className="form-input"
+            value={manualForm.structural_steel_kg}
+            onChange={update('structural_steel_kg')}
+          />
+        </div>
+
+        <div>
+          <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginBottom: '0.5rem' }}>
+            Optional — leave blank to use ratio-based estimates
+          </p>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem' }}>
+            <div className="form-group">
+              <label className="form-label">Handrails (kg)</label>
+              <input type="number" min={0} className="form-input" value={manualForm.handrail_kg} onChange={update('handrail_kg')} />
+            </div>
+            <div className="form-group">
+              <label className="form-label">Grating (kg)</label>
+              <input type="number" min={0} className="form-input" value={manualForm.grating_kg} onChange={update('grating_kg')} />
+            </div>
+            <div className="form-group">
+              <label className="form-label">M20×90 Bolts (qty)</label>
+              <input type="number" min={0} className="form-input" value={manualForm.bolts_qty} onChange={update('bolts_qty')} />
+            </div>
+            <div className="form-group">
+              <label className="form-label">Paint Material (litres)</label>
+              <input type="number" min={0} className="form-input" value={manualForm.paint_litres} onChange={update('paint_litres')} />
+            </div>
+          </div>
+        </div>
+
+        <div>
+          <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginBottom: '0.5rem' }}>
+            Project Information (optional)
+          </p>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '0.75rem' }}>
+            <div className="form-group">
+              <label className="form-label">Project Name</label>
+              <input className="form-input" value={manualForm.project_name} onChange={update('project_name')} />
+            </div>
+            <div className="form-group">
+              <label className="form-label">Client Name</label>
+              <input className="form-input" value={manualForm.client_name} onChange={update('client_name')} />
+            </div>
+            <div className="form-group">
+              <label className="form-label">Drawing Number</label>
+              <input className="form-input" value={manualForm.drawing_number} onChange={update('drawing_number')} />
+            </div>
+          </div>
+        </div>
+
+        <div className="form-group" style={{ maxWidth: 300 }}>
+          <label className="form-label">Markup %: {markupPct}%</label>
+          <input
+            type="range" min={0} max={80} value={markupPct}
+            onChange={e => setMarkupPct(Number(e.target.value))}
+            style={{ width: '100%' }}
+          />
+        </div>
+
+        <div style={{ display: 'flex', justifyContent: 'space-between', gap: '0.75rem' }}>
+          <button className="btn btn-ghost" onClick={onBack} disabled={loading}>
+            ← Back to Upload
+          </button>
+          <button className="btn btn-primary" onClick={onSubmit} disabled={!canSubmit}>
+            {loading ? 'Generating…' : 'Generate Costing Sheet →'}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 export default function DrawingCosting() {
   const [files, setFiles] = useState<File[]>([])
   const [markupPct, setMarkupPct] = useState(34)
@@ -141,6 +248,17 @@ export default function DrawingCosting() {
   const [processingStep, setProcessingStep] = useState(0)
   const [customer, setCustomer] = useState({
     customerName: '', refNo: '', enquiryNo: '', jobNo: '', attention: '', contact: '',
+  })
+  const [showManualEntry, setShowManualEntry] = useState(false)
+  const [manualForm, setManualForm] = useState({
+    structural_steel_kg: '',
+    handrail_kg: '',
+    grating_kg: '',
+    bolts_qty: '',
+    paint_litres: '',
+    project_name: '',
+    client_name: '',
+    drawing_number: '',
   })
 
   // New 4-step pipeline matching LlamaParse → LLM flow
@@ -263,12 +381,39 @@ export default function DrawingCosting() {
 
     } catch (e: any) {
       clearTimeout(t0)
-      const msg = e?.response?.data?.detail || e?.message || 'Analysis failed'
-      console.error('%c[DrawingCosting] ✗ Error:', 'color:#ef4444;font-weight:bold', msg)
+      const msg = 'The AI pipeline could not extract data from this document. You can enter the quantities manually to generate the costing sheet.'
+      console.error('%c[DrawingCosting] ✗ Error:', 'color:#ef4444;font-weight:bold', e?.response?.data?.detail || e?.message)
       console.error('Full error:', e)
       console.timeEnd('[DrawingCosting] Total time')
       console.groupEnd()
       setError(msg)
+      setShowManualEntry(true)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const handleManualEntry = async () => {
+    setLoading(true)
+    setError(null)
+    try {
+      const payload = {
+        structural_steel_kg: parseFloat(manualForm.structural_steel_kg),
+        handrail_kg:  manualForm.handrail_kg  ? parseFloat(manualForm.handrail_kg)  : null,
+        grating_kg:   manualForm.grating_kg   ? parseFloat(manualForm.grating_kg)   : null,
+        bolts_qty:    manualForm.bolts_qty    ? parseFloat(manualForm.bolts_qty)    : null,
+        paint_litres: manualForm.paint_litres ? parseFloat(manualForm.paint_litres) : null,
+        markup_pct:   markupPct,
+        project_name:   manualForm.project_name   || null,
+        client_name:    manualForm.client_name    || null,
+        drawing_number: manualForm.drawing_number || null,
+      }
+      const res = await api.post('/drawing-costing/manual-entry', payload)
+      setResult(res.data)
+      setActiveTab('bom')
+      setShowManualEntry(false)
+    } catch (e: any) {
+      setError(e?.response?.data?.detail || 'Failed to create manual costing entry.')
     } finally {
       setLoading(false)
     }
@@ -376,6 +521,20 @@ export default function DrawingCosting() {
           </p>
         </div>
 
+        {showManualEntry ? (
+          <>
+            {error && <div className="alert alert-error" style={{ marginTop: '1.5rem' }}>{error}</div>}
+            <ManualEntryPanel
+              manualForm={manualForm}
+              setManualForm={setManualForm}
+              markupPct={markupPct}
+              setMarkupPct={setMarkupPct}
+              onSubmit={handleManualEntry}
+              onBack={() => setShowManualEntry(false)}
+              loading={loading}
+            />
+          </>
+        ) : (
         <div className="card" style={{ marginTop: '1.5rem' }}>
           <div className="card-body">
             {/* Drop zone */}
@@ -431,7 +590,16 @@ export default function DrawingCosting() {
               </div>
             )}
 
-            {error && <div className="alert alert-error" style={{ marginTop: '1rem' }}>{error}</div>}
+            {error && (
+              <div className="alert alert-error" style={{ marginTop: '1rem' }}>
+                <span>{error}</span>
+                {!showManualEntry && (
+                  <button className="btn btn-primary btn-sm" style={{ marginLeft: '0.75rem' }} onClick={() => setShowManualEntry(true)}>
+                    Enter Details Manually
+                  </button>
+                )}
+              </div>
+            )}
 
             <button
               className="btn btn-primary btn-lg"
@@ -446,6 +614,7 @@ export default function DrawingCosting() {
             </button>
           </div>
         </div>
+        )}
       </div>
     )
   }
@@ -542,9 +711,26 @@ export default function DrawingCosting() {
       {activeTab === 'bom' && (
         <>
           {result.bom_items.length === 0 ? (
-            <div className="alert alert-warning" style={{ marginTop: '1rem' }}>
-              No BOM items were extracted. Check console (F12) for details on what the LLM returned.
-            </div>
+            <>
+              <div className="alert alert-warning" style={{ marginTop: '1rem', display: 'flex', alignItems: 'center', gap: '0.625rem' }}>
+                <AlertTriangle size={16} />
+                <span>No quantities were extracted from this document.</span>
+                <button className="btn btn-primary btn-sm" onClick={() => setShowManualEntry(true)}>
+                  Enter Details Manually
+                </button>
+              </div>
+              {showManualEntry && (
+                <ManualEntryPanel
+                  manualForm={manualForm}
+                  setManualForm={setManualForm}
+                  markupPct={markupPct}
+                  setMarkupPct={setMarkupPct}
+                  onSubmit={handleManualEntry}
+                  onBack={() => setShowManualEntry(false)}
+                  loading={loading}
+                />
+              )}
+            </>
           ) : (
             <div className="table-container">
               <table className="data-table">

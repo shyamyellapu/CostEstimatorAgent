@@ -21,6 +21,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import db_session
+from app.api.dependencies.permissions import require_permission
 from app.models import Job, UploadedFile, ExtractedData, CostingSheet, RateConfiguration, AuditLog
 JobStatus = type('JobStatus', (), {
     'DRAFT': 'draft', 'EXTRACTING': 'extracting',
@@ -68,7 +69,7 @@ def _detect_file_type(filename: str, content_type: str) -> FileType:
         return FileType.OTHER
 
 
-@router.post("/upload")
+@router.post("/upload", dependencies=[Depends(require_permission("estimates.create"))])
 async def upload_files(
     files: List[UploadFile] = File(...),
     client_name: Optional[str] = Form(None),
@@ -140,7 +141,7 @@ async def upload_files(
     }
 
 
-@router.post("/extract")
+@router.post("/extract", dependencies=[Depends(require_permission("estimates.create"))])
 async def extract_from_files(
     job_id: str,
     additional_context: Optional[str] = None,
@@ -272,7 +273,7 @@ async def extract_from_files(
     }
 
 
-@router.post("/confirm")
+@router.post("/confirm", dependencies=[Depends(require_permission("estimates.update"))])
 async def confirm_extraction(
     job_id: str,
     confirmed_items: list = Body(...),
@@ -326,7 +327,7 @@ async def confirm_extraction(
     }
 
 
-@router.post("/calculate")
+@router.post("/calculate", dependencies=[Depends(require_permission("estimates.update"))])
 async def calculate_costs(
     job_id: str,
     db: AsyncSession = Depends(db_session)
@@ -450,7 +451,7 @@ async def calculate_costs(
     }
 
 
-@router.post("/generate-excel")
+@router.post("/generate-excel", dependencies=[Depends(require_permission("excel.generate"))])
 async def generate_excel(
     job_id: str,
     costing_sheet_id: Optional[str] = None,
@@ -555,7 +556,7 @@ async def generate_excel(
     )
 
 
-@router.get("/jobs")
+@router.get("/jobs", dependencies=[Depends(require_permission("dashboard.read"))])
 async def list_jobs(
     skip: int = 0,
     limit: int = 50,
@@ -580,7 +581,7 @@ async def list_jobs(
     ]
 
 
-@router.get("/jobs/{job_id}")
+@router.get("/jobs/{job_id}", dependencies=[Depends(require_permission("estimates.read"))])
 async def get_job(job_id: str, db: AsyncSession = Depends(db_session)):
     from sqlalchemy import or_
     result = await db.execute(
