@@ -214,24 +214,58 @@ def run_costing_engine(
         )
 
         try:
-            if pre_wt > 0:
-                # Most accurate: use AI-extracted pre-computed weight
-                weight_kg = pre_wt
-                w_formula = f"AI pre-computed: {weight_kg:.3f} kg"
-            elif unit_wt > 0 and l_mm and l_mm > 0:
-                # Accurate: unit weight from section table × length
-                weight_kg = unit_wt * (l_mm / 1000.0) * qty
-                w_formula = f"{unit_wt} kg/m × {l_mm/1000:.3f} m × {qty} = {weight_kg:.3f} kg"
-            else:
-                # Fallback: geometric calculation from dimensions
+            # Deterministic cross-check, computed whenever enough dimensional
+            # data is available, independent of what the AI reported.
+            calc_wt: Optional[float] = None
+            calc_formula = ""
+            if unit_wt > 0 and l_mm and l_mm > 0:
+                calc_wt = unit_wt * (l_mm / 1000.0) * qty
+                calc_formula = f"{unit_wt} kg/m × {l_mm/1000:.3f} m × {qty} = {calc_wt:.3f} kg"
+            elif l_mm and (w_mm or t_mm or od_mm):
                 w_res = calculate_weight(
                     section_type=section_type,
                     quantity=qty, length_mm=l_mm, width_mm=w_mm,
                     thickness_mm=t_mm, od_mm=od_mm,
                     density_kg_m3=r["steel_density_kg_m3"]
                 )
-                weight_kg = w_res.weight_kg
-                w_formula = w_res.formula
+                if w_res.weight_kg > 0:
+                    calc_wt = w_res.weight_kg
+                    calc_formula = w_res.formula
+
+            if pre_wt > 0 and calc_wt:
+                # AI reported a pre-computed weight AND we can verify it against
+                # geometry — trust the AI value only if it roughly agrees.
+                divergence_pct = abs(pre_wt - calc_wt) / max(pre_wt, calc_wt) * 100
+                if divergence_pct <= 10.0:
+                    weight_kg = pre_wt
+                    w_formula = f"AI pre-computed: {weight_kg:.3f} kg (verified vs {calc_wt:.3f} kg calculated)"
+                else:
+                    weight_kg = calc_wt
+                    w_formula = f"Calculated (overrides AI): {calc_formula}"
+                    severity = "WARNING" if divergence_pct <= 25.0 else "ERROR"
+                    audit_trail.append({
+                        "item_tag": tag,
+                        "status": "weight_check_divergence",
+                        "severity": severity,
+                        "ai_weight_kg": round(pre_wt, 3),
+                        "calculated_weight_kg": round(calc_wt, 3),
+                        "divergence_pct": round(divergence_pct, 1),
+                        "message": (
+                            f"AI-reported weight {pre_wt:.1f} kg vs calculated "
+                            f"{calc_wt:.1f} kg — {divergence_pct:.1f}% apart. "
+                            f"Using calculated weight; verify manually."
+                        ),
+                    })
+            elif pre_wt > 0:
+                # No way to cross-check — use AI-extracted pre-computed weight
+                weight_kg = pre_wt
+                w_formula = f"AI pre-computed: {weight_kg:.3f} kg"
+            elif calc_wt:
+                weight_kg = calc_wt
+                w_formula = calc_formula
+            else:
+                weight_kg = 0.0
+                w_formula = "Incomplete dimensions"
 
             logger.debug("item_weight_ok tag=%s weight_kg=%.3f formula=%s", tag, weight_kg, w_formula)
             breakdown = LineItemCostBreakdown(
@@ -258,12 +292,36 @@ def run_costing_engine(
 
     # ────────────────────────────────────────────────────────────────────────
     # PHASE 2 — C&J 10-Step Aggregate Costing
-    # Prefer AI aggregate total when available (most accurate);
-    # fall back to summing per-item weights.
+    # Reconcile the AI-reported aggregate total against the deterministic sum
+    # of per-item weights (same divergence logic as reconcile_extraction()).
+    # The AI aggregate is a single self-reported number with no audit trail —
+    # it is only trusted when it roughly agrees with the calculated sum.
     # ────────────────────────────────────────────────────────────────────────
     ai_steel_kg = _safe_float(ci.get("structural_steel_total_kg"), 0.0) or 0.0
     summed_kg   = sum(b.weight_kg for b in item_breakdowns)
-    total_steel_kg = ai_steel_kg if ai_steel_kg > 0 else summed_kg
+
+    if ai_steel_kg > 0 and summed_kg > 0:
+        agg_divergence_pct = abs(ai_steel_kg - summed_kg) / max(ai_steel_kg, summed_kg) * 100
+        if agg_divergence_pct <= 5.0:
+            total_steel_kg = ai_steel_kg
+        else:
+            total_steel_kg = summed_kg
+            severity = "WARNING" if agg_divergence_pct <= 15.0 else "ERROR"
+            audit_trail.append({
+                "status": "aggregate_weight_divergence",
+                "severity": severity,
+                "ai_steel_kg": round(ai_steel_kg, 3),
+                "summed_kg": round(summed_kg, 3),
+                "divergence_pct": round(agg_divergence_pct, 1),
+                "message": (
+                    f"AI-reported total steel {ai_steel_kg:.1f} kg vs sum of "
+                    f"line-item weights {summed_kg:.1f} kg — {agg_divergence_pct:.1f}% apart. "
+                    f"Using summed line-item weight; verify manually."
+                ),
+            })
+    else:
+        total_steel_kg = ai_steel_kg if ai_steel_kg > 0 else summed_kg
+
     logger.info(
         "costing_phase2_start job_id=%s items=%d ai_steel_kg=%.3f summed_kg=%.3f using_kg=%.3f",
         job_id, len(item_breakdowns), ai_steel_kg, summed_kg, total_steel_kg,
