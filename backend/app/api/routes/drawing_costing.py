@@ -347,7 +347,6 @@ async def analyse_drawing(
                 ),
                 "severity": "high",
             })
-            ss_conf = min(ss_conf, 0.5)
         ss_kg = ss_kg_llm
     elif ss_kg_summed > 0:
         ss_kg = ss_kg_summed
@@ -376,7 +375,6 @@ async def analyse_drawing(
                 ),
                 "severity": "high",
             })
-            ss_conf = min(ss_conf, 0.5)
     elif vision_calc_kg_total > 0 and ss_kg == 0:
         ss_kg = vision_calc_kg_total
 
@@ -428,25 +426,27 @@ async def analyse_drawing(
             category="bolt",
             weight_kg=None,
             qty=float(bl.get("qty") or 0),
-            confidence=0.9,
+            confidence=float(bl.get("confidence") or 0.9),
         )
     for ob in (bl.get("other_bolts") or []):
         # Handle both dict and string formats from LLM response
         if isinstance(ob, dict):
             desc = ob.get("description") or f"{ob.get('size', 'Bolt')} Gr.{ob.get('grade', '8.8')}"
             qty = float(ob.get("qty") or 0)
+            ob_conf = float(ob.get("confidence") or 0.8)
         else:
-            # LLM returned a simple string like "M16" or "M20"
+            # LLM returned a simple string like "M16" or "M20" — no per-item confidence given
             desc = str(ob)
             qty = 0  # No quantity specified
-        
+            ob_conf = 0.8
+
         if qty > 0:  # Only add if qty is specified
             _add_bom(
                 description=desc,
                 category="bolt",
                 weight_kg=None,
                 qty=qty,
-                confidence=0.8,
+                confidence=ob_conf,
             )
 
     # 5. Paint Material
@@ -476,9 +476,9 @@ async def analyse_drawing(
     # Deterministic costing
     costing = _compute_costing(total_steel_kg, markup_pct / 100.0)
 
+    # Report exactly what the LLM self-assessed — the weight_flags list (surfaced
+    # in the Summary tab) is how a mismatch gets flagged, not by rewriting this.
     overall_confidence = float(extracted.get("overall_confidence") or 0.8)
-    if weight_flags:
-        overall_confidence = min(overall_confidence, 0.5)
 
     # Store quantity result
     qr = QuantityResult(
@@ -719,6 +719,7 @@ async def get_review(job_id: str, markup_pct: float = 34.0, db: AsyncSession = D
         "quantity_results": quantities,
         "total_steel_kg": total_steel_kg,
         "costing": costing,
+        "customer_info": job.customer_info_json,
         "overall_confidence": overall_confidence,
         "summary": f"Reopened job {job.job_number} for review.",
         "flags": [],
@@ -853,6 +854,13 @@ async def generate_excel_endpoint(
     job = job_result.scalar_one_or_none()
     if not job:
         raise HTTPException(status_code=404, detail=f"Job {job_id} not found.")
+
+    if not str(body.customer.get("customerName") or "").strip():
+        raise HTTPException(status_code=422, detail="Customer information (at least Customer Name) is required before generating the costing sheet.")
+
+    # Persist the customer/quotation header for this job — reopening it later (Job History →
+    # Drawing Costing review) pre-fills these instead of asking again from scratch.
+    job.customer_info_json = body.customer
 
     qty_result = await db.execute(select(QuantityResult).where(QuantityResult.job_id == job_id))
     quantities = {q.category: q for q in qty_result.scalars().all()}

@@ -62,6 +62,9 @@ class Job(Base):
     total_weight_kg: Mapped[Optional[float]] = mapped_column(Float)
     total_cost: Mapped[Optional[float]] = mapped_column(Float)
     selling_price: Mapped[Optional[float]] = mapped_column(Float)
+    # Customer/quotation header fields (customerName, refNo, enquiryNo, jobNo, attention, contact)
+    # collected just before Excel generation — see POST /drawing-costing/{job_id}/generate-excel.
+    customer_info_json: Mapped[Optional[dict]] = mapped_column(json_type())
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
     updated_at: Mapped[Optional[datetime]] = mapped_column(DateTime, onupdate=datetime.utcnow)
 

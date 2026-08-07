@@ -96,8 +96,17 @@ async def refresh(request: Request, response: Response, db: AsyncSession = Depen
         # outcome, not a CSRF violation. Checking CSRF first would incorrectly surface a 403 here.
         raise refresh_invalid()
 
-    verify_csrf(request)
-
+    # Intentionally NOT CSRF-checked, unlike every other cookie-authenticated endpoint below.
+    # On a cross-site deployment (SPA and API on different registrable domains — e.g.
+    # *.azurestaticapps.net calling *.azurewebsites.net) the frontend cannot read the CSRF
+    # cookie via document.cookie, so it caches the token in memory from the last login/refresh
+    # response body instead (see app/auth/cookies.py). That cache is wiped by a hard page
+    # reload, so the bootstrap /auth/refresh call that restores a session on page load would
+    # have no CSRF token to send — CSRF-gating it would make every reload force a re-login even
+    # though the refresh-token cookie is still perfectly valid. This is safe to skip here because
+    # a forged cross-site call only rotates the token pair (the legit cookie is silently updated
+    # in the victim's own browser); CORS (see settings.allowed_origins) stops a page on any other
+    # origin from ever reading the response body, so nothing of value leaks to a forger.
     new_raw, access_token, expires_in, user = await token_service.rotate_refresh_token(
         db, raw_token=raw_token, ip_address=_client_ip(request),
         user_agent=request.headers.get("User-Agent"), request_id=_request_id(request),

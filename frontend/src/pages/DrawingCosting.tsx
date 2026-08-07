@@ -4,7 +4,7 @@ import { useNavigate, useParams } from 'react-router-dom'
 import { api } from '../api/client'
 import {
   AlertTriangle, CheckCircle, Clock, FileText,
-  RefreshCw, Upload, XCircle, Download, Lock,
+  RefreshCw, Upload, XCircle, Download,
   FileSpreadsheet, Info,
 } from 'lucide-react'
 
@@ -71,6 +71,7 @@ interface WorkflowResult {
   bom_items: BomItem[]
   total_steel_kg: number
   costing: Costing
+  customer_info?: Record<string, string> | null
   overall_confidence: number
   summary: string
   flags: Flag[]
@@ -245,7 +246,6 @@ export default function DrawingCosting() {
   const [loading, setLoading] = useState(false)
   const [loadingReview, setLoadingReview] = useState(!!jobId)
   const [exporting, setExporting] = useState(false)
-  const [approving, setApproving] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [result, setResult] = useState<WorkflowResult | null>(null)
   const [activeTab, setActiveTab] = useState<Tab>('bom')
@@ -253,6 +253,7 @@ export default function DrawingCosting() {
   const [customer, setCustomer] = useState({
     customerName: '', refNo: '', enquiryNo: '', jobNo: '', attention: '', contact: '',
   })
+  const [showCustomerModal, setShowCustomerModal] = useState(false)
   const [showManualEntry, setShowManualEntry] = useState(false)
   const [manualForm, setManualForm] = useState({
     structural_steel_kg: '',
@@ -279,7 +280,7 @@ export default function DrawingCosting() {
         const data: WorkflowResult = res.data
         setResult(data)
         setMarkupPct(data.markup_pct ?? 34)
-        setCustomer(prev => ({ ...prev, jobNo: data.job_number }))
+        setCustomer(prev => ({ ...prev, jobNo: data.job_number, ...(data.customer_info || {}) }))
         setActiveTab('bom')
         console.log('[DrawingCosting] Reopened job:', data)
       })
@@ -478,25 +479,15 @@ export default function DrawingCosting() {
     }
   }
 
-  const handleApprove = async () => {
+  // "Generate Excel" always opens the customer-info modal first — customer details are required
+  // by the backend (and persisted to the job) before a costing sheet can be produced.
+  const handleGenerateExcel = () => {
     if (!result) return
-    setApproving(true)
     setError(null)
-    console.log(`%c[DrawingCosting] Approving job ${result.job_id}`, 'color:#22c55e')
-    try {
-      await api.post(`/drawing-costing/${result.job_id}/approve`)
-      console.log('[DrawingCosting] Job approved ✓')
-      setResult(prev => prev ? { ...prev, status: 'approved', can_generate_excel: true } : null)
-    } catch (e: any) {
-      const msg = e?.response?.data?.detail || e?.message
-      console.error('[DrawingCosting] Approve failed:', msg)
-      setError(msg)
-    } finally {
-      setApproving(false)
-    }
+    setShowCustomerModal(true)
   }
 
-  const handleGenerateExcel = async () => {
+  const doGenerateExcel = async () => {
     if (!result) return
     setExporting(true)
     setError(null)
@@ -513,9 +504,18 @@ export default function DrawingCosting() {
       a.download = `JobCosting_${customer.jobNo || result.job_number}.xlsx`
       a.click()
       URL.revokeObjectURL(url)
+      setShowCustomerModal(false)
       console.log('[DrawingCosting] Excel downloaded ✓')
     } catch (e: any) {
-      const msg = e?.response?.data?.detail || e?.message
+      // With responseType: 'blob', an error response body arrives as a Blob, not JSON.
+      let msg = e?.message
+      if (e?.response?.data instanceof Blob) {
+        try {
+          msg = JSON.parse(await e.response.data.text())?.detail || msg
+        } catch { /* not JSON — keep the generic message */ }
+      } else {
+        msg = e?.response?.data?.detail || msg
+      }
       console.error('[DrawingCosting] Excel generation failed:', msg)
       setError(msg)
     } finally {
@@ -681,7 +681,7 @@ export default function DrawingCosting() {
   const reviewCount = result.bom_items.filter(i => i.review_required).length
   const tabs: { id: Tab; label: string; count?: number }[] = [
     { id: 'bom',     label: 'BOM Items',  count: result.bom_items.length },
-    { id: 'costing', label: 'Costing' },
+    { id: 'costing', label: 'Customer Information' },
     { id: 'summary', label: 'Summary' },
   ]
 
@@ -739,12 +739,6 @@ export default function DrawingCosting() {
 
       {/* Action buttons */}
       <div style={{ display: 'flex', gap: '0.625rem', flexWrap: 'wrap', marginBottom: '1rem' }}>
-        <button className="btn btn-secondary" onClick={handleRecalculate} disabled={loading}>
-          <RefreshCw size={14} className={loading ? 'spin' : ''} /> Recalculate
-        </button>
-        <button className="btn btn-secondary" onClick={handleApprove} disabled={approving}>
-          <Lock size={14} /> {approving ? 'Approving…' : 'Approve'}
-        </button>
         <button className="btn btn-success" onClick={handleGenerateExcel} disabled={exporting}>
           <FileSpreadsheet size={14} /> {exporting ? 'Generating…' : 'Generate Excel'}
         </button>
@@ -1026,6 +1020,57 @@ export default function DrawingCosting() {
               </div>
             </div>
           )}
+        </div>
+      )}
+
+      {/* Customer information modal — required before generating the costing sheet */}
+      {showCustomerModal && (
+        <div
+          style={{
+            position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.45)',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            zIndex: 1000, padding: '1rem',
+          }}
+          onClick={() => !exporting && setShowCustomerModal(false)}
+        >
+          <div
+            className="card"
+            style={{ maxWidth: 480, width: '100%', maxHeight: '90vh', overflowY: 'auto' }}
+            onClick={e => e.stopPropagation()}
+          >
+            <div className="card-header">
+              <h3 className="card-title">Customer Information</h3>
+              <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)', margin: 0 }}>
+                Required before generating the costing sheet — saved to this job for next time.
+              </p>
+            </div>
+            <div className="card-body" style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+              {Object.entries(customer).map(([k, v]) => (
+                <div key={k} className="form-group">
+                  <label className="form-label">
+                    {k.replace(/([A-Z])/g, ' $1').trim()}{k === 'customerName' && ' *'}
+                  </label>
+                  <input
+                    className="form-input" value={v}
+                    onChange={e => setCustomer(prev => ({ ...prev, [k]: e.target.value }))}
+                  />
+                </div>
+              ))}
+              {error && <div className="alert alert-error">{error}</div>}
+              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.625rem', marginTop: '0.5rem' }}>
+                <button className="btn btn-ghost" onClick={() => setShowCustomerModal(false)} disabled={exporting}>
+                  Cancel
+                </button>
+                <button
+                  className="btn btn-success"
+                  onClick={doGenerateExcel}
+                  disabled={exporting || !customer.customerName.trim()}
+                >
+                  <FileSpreadsheet size={14} /> {exporting ? 'Generating…' : 'Confirm & Generate'}
+                </button>
+              </div>
+            </div>
+          </div>
         </div>
       )}
     </div>

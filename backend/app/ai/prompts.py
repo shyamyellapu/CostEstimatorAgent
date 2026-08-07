@@ -1052,12 +1052,13 @@ You are a structural fabrication cost estimator. Extract these 5 items from the 
    - Sum all handrail/railing members (top rail + mid rail + posts/stanchions) if listed separately.
 3. Grating (kg or m²) — labels: "Grating", "Chequer Plate", "Floor Plate", "Open Mesh".
 4. M20×90 Bolts HEX HD Gr.8.8 BS 4190 (qty) — search "M20", "M20×90", "HEX HD", "Gr 8.8", "BS 4190". null if not found.
+   - Include your own confidence (0.0-1.0) for the M20×90 match, and for each entry in "other_bolts".
 5. Paint Material (litres) — use stated litres, else surface_area_m2 × 0.15, else steel_kg × 0.01538.
 
 DOCUMENT:
 {text}
 
 Return ONLY valid JSON, no markdown:
-{{"structural_steel":{{"weight_kg":0.0,"line_items":[{{"description":"","weight_kg":0.0}}],"source_description":"","confidence":0.0}},"handrails":{{"weight_kg":null,"linear_m":null,"source_description":null,"confidence":0.0}},"grating":{{"weight_kg":null,"area_m2":null,"source_description":null,"confidence":0.0}},"bolts_m20x90":{{"found":false,"qty":null,"description":"","other_bolts":[]}},"paint_material":{{"litres":0.0,"surface_area_m2":null,"paint_spec":"","paint_calc_method":"stated_directly|calculated_from_area|calculated_from_steel_weight","confidence":0.0}},"overall_confidence":0.0,"summary":""}}
+{{"structural_steel":{{"weight_kg":0.0,"line_items":[{{"description":"","weight_kg":0.0}}],"source_description":"","confidence":0.0}},"handrails":{{"weight_kg":null,"linear_m":null,"source_description":null,"confidence":0.0}},"grating":{{"weight_kg":null,"area_m2":null,"source_description":null,"confidence":0.0}},"bolts_m20x90":{{"found":false,"qty":null,"description":"","confidence":0.0,"other_bolts":[{{"description":"","qty":0,"confidence":0.0}}]}},"paint_material":{{"litres":0.0,"surface_area_m2":null,"paint_spec":"","paint_calc_method":"stated_directly|calculated_from_area|calculated_from_steel_weight","confidence":0.0}},"overall_confidence":0.0,"summary":""}}
 """
 
