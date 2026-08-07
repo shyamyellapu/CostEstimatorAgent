@@ -55,6 +55,41 @@ def _safe_job_no(s: str) -> str:
     return "".join(c for c in str(s) if c.isalnum() or c in "-_.")
 
 
+def _deterministic_weight_from_vision(extraction) -> float:
+    """
+    Sum a deterministic steel weight straight from a vision extraction's
+    structural_elements/dimensions — bypasses the second LLM hop that would
+    otherwise have to re-read its own JSON dump to guess a total.
+    """
+    from app.services.weight_calculator import calculate_weight
+
+    total = 0.0
+    elements = list(getattr(extraction, "structural_elements", None) or []) or \
+        list(getattr(extraction, "dimensions", None) or [])
+    for el in elements:
+        d = el.model_dump() if hasattr(el, "model_dump") else dict(el)
+        qty = float(d.get("quantity") or 1)
+        length_mm = d.get("length_mm")
+        unit_wt = float(d.get("unit_weight_kg_per_m") or 0)
+        pre_wt = float(d.get("total_weight_kg") or 0)
+        if unit_wt > 0 and length_mm:
+            total += unit_wt * (float(length_mm) / 1000.0) * qty
+        elif pre_wt > 0:
+            total += pre_wt
+        elif length_mm:
+            try:
+                w_res = calculate_weight(
+                    section_type=d.get("section_type") or "plate",
+                    quantity=qty, length_mm=length_mm,
+                    width_mm=d.get("width_mm"), thickness_mm=d.get("thickness_mm"),
+                    od_mm=d.get("od_mm"),
+                )
+                total += w_res.weight_kg
+            except Exception:
+                pass
+    return round(total, 2)
+
+
 # ---------------------------------------------------------------------------
 # POST /analyse
 # ---------------------------------------------------------------------------
@@ -79,6 +114,7 @@ async def analyse_drawing(
     job_id = str(job.id)
 
     combined_markdown_parts: List[str] = []
+    vision_calc_kg_total = 0.0
 
     for upload in files:
         fname = upload.filename or "upload"
@@ -176,6 +212,7 @@ async def analyse_drawing(
                     default=str,
                 )
                 combined_markdown_parts.append(f"## File: {fname} (vision fallback)\n\n{fb_text}")
+                vision_calc_kg_total += _deterministic_weight_from_vision(extracted_fb)
                 uf.processing_status = "completed"
                 uf.is_processed = "done"
                 logger.info("Job %s: vision fallback produced %d chars for '%s'", job_id, len(fb_text), fname)
@@ -317,6 +354,33 @@ async def analyse_drawing(
         ss_kg = ss_kg_summed
     else:
         ss_kg = ss_kg_llm
+
+    # Second, independent cross-check: for uploaded drawings (no BOQ table),
+    # LlamaParse falls back to vision extraction with real per-member geometry.
+    # That JSON then gets re-summarised by this same LLM call, which can drift
+    # from the geometry it just extracted — trust the geometry-derived sum
+    # whenever it disagrees materially with whatever this call settled on.
+    if vision_calc_kg_total > 0 and ss_kg > 0:
+        vis_discrepancy = abs(vision_calc_kg_total - ss_kg) / max(vision_calc_kg_total, ss_kg)
+        if vis_discrepancy > 0.15:
+            logger.warning(
+                "Job %s: structural steel weight mismatch — BOQ summary=%.2f kg vs "
+                "vision-extracted geometry sum=%.2f kg (%.0f%% diff). Using geometry sum.",
+                job_id, ss_kg, vision_calc_kg_total, vis_discrepancy * 100,
+            )
+            weight_flags.append({
+                "field": "structural_steel.weight_kg",
+                "message": (
+                    f"BOQ summary reported {ss_kg:.1f} kg but the per-member geometry "
+                    f"extracted from the drawing sums to {vision_calc_kg_total:.1f} kg — "
+                    "using the geometry-derived value. Please verify against the drawing."
+                ),
+                "severity": "high",
+            })
+            ss_kg = vision_calc_kg_total
+            ss_conf = min(ss_conf, 0.5)
+    elif vision_calc_kg_total > 0 and ss_kg == 0:
+        ss_kg = vision_calc_kg_total
 
     if ss_kg > 0:
         _add_bom(
