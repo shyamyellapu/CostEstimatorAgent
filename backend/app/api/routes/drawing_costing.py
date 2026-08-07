@@ -322,9 +322,10 @@ async def analyse_drawing(
     ss_kg_llm = float(ss.get("weight_kg") or 0)
     ss_conf = float(ss.get("confidence") or 0.8)
 
-    # Deterministic reconciliation: never trust the LLM's own arithmetic for a
-    # multi-row sum — re-add the individual line items it found in Python and
-    # prefer that total when it disagrees with the LLM's stated grand total.
+    # Report exactly what the AI (LlamaParse + LLM) extracted as the structural
+    # steel total — never silently substitute a Python-recomputed value. The
+    # line-item sum is still computed and compared purely to flag a mismatch
+    # for manual review; it never overrides the reported total.
     weight_flags: List[Dict[str, Any]] = []
     ss_line_items = [li for li in (ss.get("line_items") or []) if isinstance(li, dict)]
     ss_kg_summed = round(sum(float(li.get("weight_kg") or 0) for li in ss_line_items), 2)
@@ -333,23 +334,21 @@ async def analyse_drawing(
         discrepancy = abs(ss_kg_summed - ss_kg_llm) / max(ss_kg_summed, ss_kg_llm)
         if discrepancy > 0.15:
             logger.warning(
-                "Job %s: structural steel weight mismatch — LLM total=%.2f kg vs "
-                "Python-summed line items=%.2f kg (%.0f%% diff). Using summed value.",
+                "Job %s: structural steel weight mismatch — stated total=%.2f kg vs "
+                "Python-summed line items=%.2f kg (%.0f%% diff). Keeping stated total.",
                 job_id, ss_kg_llm, ss_kg_summed, discrepancy * 100,
             )
             weight_flags.append({
                 "field": "structural_steel.weight_kg",
                 "message": (
-                    f"AI reported {ss_kg_llm:.1f} kg but the individual line items "
-                    f"it extracted sum to {ss_kg_summed:.1f} kg — using the summed value. "
-                    "Please verify against the drawing."
+                    f"AI reported a stated total of {ss_kg_llm:.1f} kg but the individual "
+                    f"line items it extracted sum to {ss_kg_summed:.1f} kg — keeping the "
+                    "stated total. Please verify against the drawing."
                 ),
                 "severity": "high",
             })
-            ss_kg = ss_kg_summed
             ss_conf = min(ss_conf, 0.5)
-        else:
-            ss_kg = ss_kg_summed
+        ss_kg = ss_kg_llm
     elif ss_kg_summed > 0:
         ss_kg = ss_kg_summed
     else:
@@ -365,7 +364,7 @@ async def analyse_drawing(
         if vis_discrepancy > 0.15:
             logger.warning(
                 "Job %s: structural steel weight mismatch — BOQ summary=%.2f kg vs "
-                "vision-extracted geometry sum=%.2f kg (%.0f%% diff). Using geometry sum.",
+                "vision-extracted geometry sum=%.2f kg (%.0f%% diff). Keeping BOQ summary.",
                 job_id, ss_kg, vision_calc_kg_total, vis_discrepancy * 100,
             )
             weight_flags.append({
@@ -373,11 +372,10 @@ async def analyse_drawing(
                 "message": (
                     f"BOQ summary reported {ss_kg:.1f} kg but the per-member geometry "
                     f"extracted from the drawing sums to {vision_calc_kg_total:.1f} kg — "
-                    "using the geometry-derived value. Please verify against the drawing."
+                    "keeping the BOQ summary. Please verify against the drawing."
                 ),
                 "severity": "high",
             })
-            ss_kg = vision_calc_kg_total
             ss_conf = min(ss_conf, 0.5)
     elif vision_calc_kg_total > 0 and ss_kg == 0:
         ss_kg = vision_calc_kg_total
@@ -498,6 +496,8 @@ async def analyse_drawing(
 
     job.status = "pending_review"
     job.total_weight_kg = total_steel_kg
+    job.selling_price = costing["selling_price"]
+    job.total_cost = costing["grand_total"]
 
     db.add(AuditLog(
         job_id=job_id,
@@ -672,8 +672,12 @@ async def manual_entry(body: ManualBomEntry, db: AsyncSession = Depends(db_sessi
 # GET /{job_id}/review
 # ---------------------------------------------------------------------------
 @router.get("/{job_id}/review")
-async def get_review(job_id: str, db: AsyncSession = Depends(db_session)):
-    """Return the full review payload for a job."""
+async def get_review(job_id: str, markup_pct: float = 34.0, db: AsyncSession = Depends(db_session)):
+    """
+    Return the full review payload for a job — same shape as /analyse and
+    /manual-entry so the frontend can reopen a previously-created job in the
+    exact same review UI (edit BOM items, adjust markup, regenerate Excel).
+    """
     job_result = await db.execute(select(Job).where(Job.id == job_id))
     job = job_result.scalar_one_or_none()
     if not job:
@@ -696,15 +700,31 @@ async def get_review(job_id: str, db: AsyncSession = Depends(db_session)):
         float(q["weight_kg"] or 0) for q in quantities
         if q.get("category") == "structural_steel"
     )
+    total_steel_kg = round(total_steel_kg, 2)
+
+    confidences = [float(q["confidence"]) for q in quantities if q.get("confidence") is not None]
+    overall_confidence = round(sum(confidences) / len(confidences), 2) if confidences else None
+
+    costing = _compute_costing(total_steel_kg, markup_pct / 100.0)
 
     return {
         "job_id": job_id,
         "job_number": job.job_number,
-        "status": job.status,
-        "can_generate_excel": True,
+        "project_information": {
+            "project_name": job.project_name,
+            "client_name": job.client_name,
+            "drawing_number": job.project_ref,
+        },
         "bom_items": bom_items,
         "quantity_results": quantities,
-        "total_steel_kg": round(total_steel_kg, 2),
+        "total_steel_kg": total_steel_kg,
+        "costing": costing,
+        "overall_confidence": overall_confidence,
+        "summary": f"Reopened job {job.job_number} for review.",
+        "flags": [],
+        "status": job.status,
+        "can_generate_excel": True,
+        "markup_pct": markup_pct,
     }
 
 
@@ -773,7 +793,11 @@ async def recalculate(
         .values(weight_kg=total_steel_kg, quantity_value=total_steel_kg)
     )
     await db.execute(
-        update(Job).where(Job.id == job_id).values(total_weight_kg=total_steel_kg)
+        update(Job).where(Job.id == job_id).values(
+            total_weight_kg=total_steel_kg,
+            total_cost=costing["grand_total"],
+            selling_price=costing["selling_price"],
+        )
     )
     db.add(AuditLog(
         job_id=job_id,

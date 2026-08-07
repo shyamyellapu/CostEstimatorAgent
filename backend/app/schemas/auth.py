@@ -45,6 +45,9 @@ class LoginResponse(BaseModel):
     token_type: str = "bearer"
     expires_in: int
     user: UserPublic
+    # Echoed here (not just set as a cookie) because a cross-site SPA can't read a cookie scoped
+    # to a different registrable domain via document.cookie — see app/auth/cookies.py.
+    csrf_token: str
 
 
 class ChangePasswordRequest(BaseModel):

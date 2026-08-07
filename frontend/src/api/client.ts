@@ -36,6 +36,21 @@ export function getAccessToken(): string | null {
   return currentAccessToken
 }
 
+// ─── In-memory CSRF-token store ────────────────────────────────────────────────────────────────
+// login/refresh echo the CSRF token in the JSON body (see backend LoginResponse.csrf_token)
+// because the CSRF cookie itself is scoped to the backend's own host — in production the SPA
+// (*.azurestaticapps.net) and API (*.azurewebsites.net) are different registrable domains, so
+// document.cookie on the frontend page can never see a cookie the backend's response set. Caching
+// the value here instead of reading it back out of document.cookie is what makes CSRF work
+// cross-site; auth.utils.ts's cookie-based getCsrfToken() is kept only as a same-origin fallback.
+let currentCsrfToken: string | null = null
+export function setCsrfToken(token: string | null): void {
+  currentCsrfToken = token
+}
+export function getCsrfTokenFromMemory(): string | null {
+  return currentCsrfToken
+}
+
 // AuthProvider registers the actual refresh implementation (it also needs to update React state
 // and reschedule the silent-refresh timer) — the interceptor only orchestrates single-flight +
 // retry-queue behavior around it.
@@ -85,7 +100,7 @@ api.interceptors.request.use((config: InternalAxiosRequestConfig) => {
   }
   const method = (config.method || 'get').toLowerCase()
   if (MUTATING_METHODS.has(method)) {
-    const csrfToken = getCsrfToken()
+    const csrfToken = getCsrfTokenFromMemory() ?? getCsrfToken()
     if (csrfToken) {
       config.headers.set(CSRF_HEADER_NAME, csrfToken)
     }
@@ -150,6 +165,7 @@ api.interceptors.response.use(
       } catch (refreshError) {
         console.warn('[auth] refresh failed after 401, logging out:', refreshError)
         setAccessToken(null)
+        setCsrfToken(null)
         onAuthFailure?.(refreshError)
         return Promise.reject(refreshError)
       }

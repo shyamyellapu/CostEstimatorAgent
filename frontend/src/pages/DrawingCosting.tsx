@@ -1,5 +1,6 @@
-import { useCallback, useState, type Dispatch, type SetStateAction, type ChangeEvent } from 'react'
+import { useCallback, useEffect, useState, type Dispatch, type SetStateAction, type ChangeEvent } from 'react'
 import { useDropzone } from 'react-dropzone'
+import { useNavigate, useParams } from 'react-router-dom'
 import { api } from '../api/client'
 import {
   AlertTriangle, CheckCircle, Clock, FileText,
@@ -237,9 +238,12 @@ function ManualEntryPanel({
 }
 
 export default function DrawingCosting() {
+  const { jobId } = useParams<{ jobId?: string }>()
+  const navigate = useNavigate()
   const [files, setFiles] = useState<File[]>([])
   const [markupPct, setMarkupPct] = useState(34)
   const [loading, setLoading] = useState(false)
+  const [loadingReview, setLoadingReview] = useState(!!jobId)
   const [exporting, setExporting] = useState(false)
   const [approving, setApproving] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -260,6 +264,38 @@ export default function DrawingCosting() {
     client_name: '',
     drawing_number: '',
   })
+
+  // Reopening a previously-created job from Job History — load its saved review
+  // state (BOM items + costing) instead of showing the upload screen.
+  useEffect(() => {
+    if (!jobId) return
+    let cancelled = false
+    setLoadingReview(true)
+    setError(null)
+    console.log(`%c[DrawingCosting] Reopening job ${jobId}`, 'color:#6366f1')
+    api.get(`/drawing-costing/${jobId}/review?markup_pct=${markupPct}`)
+      .then(res => {
+        if (cancelled) return
+        const data: WorkflowResult = res.data
+        setResult(data)
+        setMarkupPct(data.markup_pct ?? 34)
+        setCustomer(prev => ({ ...prev, jobNo: data.job_number }))
+        setActiveTab('bom')
+        console.log('[DrawingCosting] Reopened job:', data)
+      })
+      .catch(e => {
+        if (cancelled) return
+        console.error('[DrawingCosting] Failed to load job for review:', e?.response?.data?.detail || e?.message)
+        setError(e?.response?.data?.detail || 'Could not load this job.')
+      })
+      .finally(() => {
+        if (!cancelled) setLoadingReview(false)
+      })
+    return () => { cancelled = true }
+    // Only re-run when the route's jobId changes — markupPct is intentionally
+    // captured once at load time, not on every slider tick.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [jobId])
 
   // New 4-step pipeline matching LlamaParse → LLM flow
   const processingSteps: Step[] = [
@@ -510,6 +546,28 @@ export default function DrawingCosting() {
     : ['docx', 'doc'].includes(ext) ? 'docx'
     : 'other'
 
+  // ── LOADING (reopening an existing job) ──────────────────────────
+  if (jobId && loadingReview) {
+    return (
+      <div className="page-body" style={{ maxWidth: 700, margin: '0 auto', padding: '3rem 1.5rem', textAlign: 'center' }}>
+        <div className="spinner spinner-lg" style={{ margin: '0 auto' }} />
+        <p style={{ marginTop: '1rem', color: 'var(--text-muted)' }}>Loading job…</p>
+      </div>
+    )
+  }
+
+  // ── FAILED TO REOPEN AN EXISTING JOB ─────────────────────────────
+  if (jobId && !result) {
+    return (
+      <div className="page-body" style={{ maxWidth: 700, margin: '0 auto', padding: '1.5rem' }}>
+        <div className="alert alert-error">{error || 'Could not load this job.'}</div>
+        <button className="btn btn-secondary" style={{ marginTop: '1rem' }} onClick={() => navigate('/history')}>
+          ← Back to Job History
+        </button>
+      </div>
+    )
+  }
+
   // ── UPLOAD SCREEN ──────────────────────────────────────────────
   if (!result) {
     return (
@@ -648,12 +706,19 @@ export default function DrawingCosting() {
             )}
           </p>
         </div>
-        <button
-          className="btn btn-ghost btn-sm"
-          onClick={() => { setResult(null); setFiles([]); setProcessingStep(0) }}
-        >
-          ← New Analysis
-        </button>
+        <div style={{ display: 'flex', gap: '0.5rem' }}>
+          {jobId && (
+            <button className="btn btn-ghost btn-sm" onClick={() => navigate('/history')}>
+              ← Job History
+            </button>
+          )}
+          <button
+            className="btn btn-ghost btn-sm"
+            onClick={() => { navigate('/drawing-costing'); setResult(null); setFiles([]); setProcessingStep(0) }}
+          >
+            ← New Analysis
+          </button>
+        </div>
       </div>
 
       {/* Confidence strip */}

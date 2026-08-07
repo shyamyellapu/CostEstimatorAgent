@@ -1,7 +1,7 @@
 import { createContext, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { ApiError, setAccessToken, setOnAuthFailure, setRefreshHandler, triggerRefresh } from '../api/client'
+import { ApiError, setAccessToken, setCsrfToken, setOnAuthFailure, setRefreshHandler, triggerRefresh } from '../api/client'
 import { authService } from '../services/authService'
 import { REFRESH_BUFFER_SECONDS } from './auth.constants'
 import type { AuthStatus, AuthUser } from './auth.types'
@@ -73,6 +73,7 @@ export default function AuthProvider({ children }: { children: ReactNode }) {
     try {
       const data = await authService.refresh()
       setAccessToken(data.access_token)
+      setCsrfToken(data.csrf_token)
       setUser(data.user)
       setStatus('authenticated')
       setSessionExpired(false)
@@ -90,6 +91,7 @@ export default function AuthProvider({ children }: { children: ReactNode }) {
       }
       console.warn('[auth] refreshSession: failed, logging out:', err)
       setAccessToken(null)
+      setCsrfToken(null)
       setUser(null)
       setStatus('unauthenticated')
       clearRefreshTimer()
@@ -179,6 +181,7 @@ export default function AuthProvider({ children }: { children: ReactNode }) {
     try {
       const data = await authService.login({ identifier, password, remember_me: rememberMe })
       setAccessToken(data.access_token)
+      setCsrfToken(data.csrf_token)
       setUser(data.user)
       setStatus('authenticated')
       setSessionExpired(false)
@@ -211,6 +214,7 @@ export default function AuthProvider({ children }: { children: ReactNode }) {
       /* best-effort — clear local state regardless */
     }
     setAccessToken(null)
+    setCsrfToken(null)
     setUser(null)
     setStatus('unauthenticated')
     clearRefreshTimer()
@@ -224,6 +228,7 @@ export default function AuthProvider({ children }: { children: ReactNode }) {
       /* best-effort */
     }
     setAccessToken(null)
+    setCsrfToken(null)
     setUser(null)
     setStatus('unauthenticated')
     clearRefreshTimer()
@@ -233,6 +238,7 @@ export default function AuthProvider({ children }: { children: ReactNode }) {
     // Backend revokes every session (including this one) on password change — treat as logout.
     await authService.changePassword({ current_password: currentPassword, new_password: newPassword })
     setAccessToken(null)
+    setCsrfToken(null)
     setUser(null)
     setStatus('unauthenticated')
     clearRefreshTimer()

@@ -23,6 +23,7 @@ async def get_history(skip: int = 0, limit: int = 100, db: AsyncSession = Depend
             "job_number": j.job_number,
             "client_name": j.client_name,
             "project_name": j.project_name,
+            "project_ref": j.project_ref,
             "status": j.status,
             "selling_price": j.selling_price,
             "currency": j.currency,

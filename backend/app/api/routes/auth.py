@@ -61,8 +61,8 @@ async def _issue_login_session(
 
     await db.commit()
 
-    set_auth_cookies(response, refresh_token=raw_refresh)
-    return LoginResponse(access_token=access_token, expires_in=expires_in, user=_to_public(user))
+    csrf_token = set_auth_cookies(response, refresh_token=raw_refresh)
+    return LoginResponse(access_token=access_token, expires_in=expires_in, user=_to_public(user), csrf_token=csrf_token)
 
 
 @router.post("/register", response_model=UserPublic, status_code=status.HTTP_201_CREATED)
@@ -102,8 +102,8 @@ async def refresh(request: Request, response: Response, db: AsyncSession = Depen
         db, raw_token=raw_token, ip_address=_client_ip(request),
         user_agent=request.headers.get("User-Agent"), request_id=_request_id(request),
     )
-    set_auth_cookies(response, refresh_token=new_raw)
-    return LoginResponse(access_token=access_token, expires_in=expires_in, user=_to_public(user))
+    csrf_token = set_auth_cookies(response, refresh_token=new_raw)
+    return LoginResponse(access_token=access_token, expires_in=expires_in, user=_to_public(user), csrf_token=csrf_token)
 
 
 @router.post("/logout", status_code=status.HTTP_204_NO_CONTENT)

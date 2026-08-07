@@ -58,7 +58,7 @@ export default function App() {
             <Route path="/estimate/new" element={
               <PermissionGuard permissions={[PERMISSIONS.ESTIMATES_CREATE]}><NewEstimate /></PermissionGuard>
             } />
-            <Route path="/drawing-costing" element={
+            <Route path="/drawing-costing/:jobId?" element={
               <PermissionGuard permissions={[PERMISSIONS.DRAWINGS_PROCESS]}><DrawingCosting /></PermissionGuard>
             } />
             <Route path="/weight-calculator" element={

@@ -15,6 +15,7 @@ export interface LoginResponse {
   token_type: string
   expires_in: number
   user: AuthUser
+  csrf_token: string
 }
 
 export interface AuthApiError {
