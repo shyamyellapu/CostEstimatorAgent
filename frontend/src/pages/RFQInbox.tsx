@@ -413,28 +413,38 @@ function MailboxCard({ mailbox: mb, syncing, onSync, onDisconnect, onReauth }: {
   mailbox: Mailbox; syncing: boolean; onSync: () => void; onDisconnect: () => void; onReauth?: () => void
 }) {
   return (
-    <div style={{ padding: '12px 14px', borderRadius: 10, border: '1px solid var(--border)', background: 'var(--bg-secondary)', display: 'flex', alignItems: 'center', gap: 12 }}>
-      <div style={{ width: 36, height: 36, borderRadius: '50%', background: 'linear-gradient(135deg,#6366f1,#8b5cf6)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff', fontWeight: 700, fontSize: 14, flexShrink: 0 }}>
-        {mb.email_address[0].toUpperCase()}
-      </div>
-      <div style={{ flex: 1, minWidth: 0 }}>
-        <div style={{ fontWeight: 600, fontSize: 13, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{mb.email_address}</div>
-        <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 2 }}>
-          {mb.last_synced
-            ? `Synced ${new Date(mb.last_synced).toLocaleString()}`
-            : 'Never synced — click Sync to fetch emails'}
+    <div style={{ padding: '12px 14px', borderRadius: 10, border: '1px solid var(--border)', background: 'var(--bg-secondary)', display: 'flex', flexDirection: 'column', gap: 10 }}>
+      {/* Identity row — avatar + email/name get the full card width to themselves */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0 }}>
+        <div style={{ width: 36, height: 36, borderRadius: '50%', background: 'linear-gradient(135deg,#6366f1,#8b5cf6)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff', fontWeight: 700, fontSize: 14, flexShrink: 0 }}>
+          {mb.email_address[0].toUpperCase()}
+        </div>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div
+            style={{ fontWeight: 600, fontSize: 13, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+            title={mb.display_name ? `${mb.display_name} <${mb.email_address}>` : mb.email_address}
+          >
+            {mb.email_address}
+          </div>
+          <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            {mb.last_synced
+              ? <span title={new Date(mb.last_synced).toLocaleString()}>Synced {formatRelativeDate(mb.last_synced)}</span>
+              : 'Never synced — click Sync to fetch emails'}
+          </div>
         </div>
       </div>
-      <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}>
-        <button className="btn btn-secondary" style={{ padding: '5px 10px', fontSize: 11 }} onClick={onSync} disabled={syncing} title="Sync this mailbox">
-          <RefreshCw size={12} className={syncing ? 'spin' : ''} /> {syncing ? '…' : 'Sync'}
+
+      {/* Actions row — own line so it never competes with the email/date for width */}
+      <div style={{ display: 'flex', gap: 6 }}>
+        <button className="btn btn-secondary" style={{ padding: '5px 10px', fontSize: 11, flex: 1 }} onClick={onSync} disabled={syncing} title="Sync this mailbox">
+          <RefreshCw size={12} className={syncing ? 'spin' : ''} /> {syncing ? 'Syncing…' : 'Sync'}
         </button>
         {onReauth && (
-          <button className="btn btn-secondary" style={{ padding: '5px 10px', fontSize: 11 }} onClick={onReauth} title="Re-authenticate (fix scope / expired token)">
+          <button className="btn btn-secondary" style={{ padding: '5px 10px', fontSize: 11, flex: 1 }} onClick={onReauth} title="Re-authenticate (fix scope / expired token)">
             <LogIn size={12} /> Re-auth
           </button>
         )}
-        <button style={{ background: 'none', border: '1px solid var(--border)', borderRadius: 6, padding: '5px 8px', cursor: 'pointer', color: '#ef4444', display: 'flex', alignItems: 'center' }} onClick={onDisconnect} title="Disconnect">
+        <button style={{ background: 'none', border: '1px solid var(--border)', borderRadius: 6, padding: '5px 8px', cursor: 'pointer', color: '#ef4444', display: 'flex', alignItems: 'center', flexShrink: 0 }} onClick={onDisconnect} title="Disconnect">
           <Trash2 size={12} />
         </button>
       </div>
