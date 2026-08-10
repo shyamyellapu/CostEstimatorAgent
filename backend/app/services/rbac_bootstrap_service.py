@@ -10,7 +10,12 @@ or via the CLI in `app.scripts.bootstrap_rbac_users`):
 - Nothing here ever logs, prints, or returns a plaintext password or password hash.
 - A Postgres advisory transaction lock serializes concurrent bootstrap attempts from multiple
   Gunicorn workers so they never race each other; the operation is idempotent either way.
+
+Additional named accounts (beyond the single fixed admin/manager/estimator slots) can be seeded
+via `BOOTSTRAP_EXTRA_ACCOUNTS`, a JSON array of {role, email, username, full_name, password}
+objects — see `app.config.Settings.bootstrap_extra_accounts`.
 """
+import json
 from dataclasses import dataclass, field
 import logging
 from typing import Optional
@@ -69,6 +74,44 @@ def _load_account_specs() -> list[_AccountSpec]:
         specs.append(_AccountSpec(
             role_name=role_name, email=email.strip().lower(), username=username.strip().lower(),
             full_name=full_name.strip(), password=password,
+        ))
+    specs.extend(_load_extra_account_specs())
+    return specs
+
+
+def _load_extra_account_specs() -> list[_AccountSpec]:
+    """Parse BOOTSTRAP_EXTRA_ACCOUNTS, a JSON array of {role, email, username, full_name,
+    password} objects, for named accounts that don't fit the fixed admin/manager/estimator slots
+    (e.g. a second estimator). Malformed entries are skipped with a warning, never guessed at."""
+    raw = settings.bootstrap_extra_accounts.strip()
+    if not raw:
+        return []
+    try:
+        entries = json.loads(raw)
+    except (ValueError, TypeError):
+        logger.warning("RBAC bootstrap: BOOTSTRAP_EXTRA_ACCOUNTS is not valid JSON - ignoring.")
+        return []
+    if not isinstance(entries, list):
+        logger.warning("RBAC bootstrap: BOOTSTRAP_EXTRA_ACCOUNTS must be a JSON array - ignoring.")
+        return []
+
+    specs: list[_AccountSpec] = []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        role_name = str(entry.get("role", "")).strip().lower()
+        email = str(entry.get("email", "")).strip().lower()
+        username = str(entry.get("username", "")).strip().lower()
+        full_name = str(entry.get("full_name", "")).strip()
+        password = entry.get("password", "")
+        if not (role_name and email and username and full_name and password):
+            logger.warning(
+                "RBAC bootstrap: skipping an entry in BOOTSTRAP_EXTRA_ACCOUNTS - one or more "
+                "required fields (role, email, username, full_name, password) are missing.",
+            )
+            continue
+        specs.append(_AccountSpec(
+            role_name=role_name, email=email, username=username, full_name=full_name, password=password,
         ))
     return specs
 

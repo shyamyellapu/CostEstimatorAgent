@@ -166,6 +166,11 @@ class Settings(BaseSettings):
     bootstrap_estimator_full_name: str = ""
     bootstrap_estimator_password: str = ""
 
+    # Additional named accounts beyond the fixed admin/manager/estimator slots above, as a JSON
+    # array of {role, email, username, full_name, password} objects, e.g.:
+    # BOOTSTRAP_EXTRA_ACCOUNTS=[{"role":"estimator","email":"a@b.com","username":"a","full_name":"A B","password":"..."}]
+    bootstrap_extra_accounts: str = ""
+
     class Config:
         env_file = _ENV_FILE
         env_file_encoding = "utf-8"
