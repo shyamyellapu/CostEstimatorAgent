@@ -37,3 +37,10 @@ httpx>=0.27.0
 
 # Utilities
 python-dateutil==2.9.0
+
+# Authentication
+pwdlib[argon2]==0.2.1
+pyjwt==2.10.1
+user-agents==2.2.0
+apscheduler==3.10.4
+email-validator>=2.0.0

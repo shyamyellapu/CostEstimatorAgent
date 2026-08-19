@@ -477,27 +477,53 @@ class OpenAIProvider(AIProvider):
         messages: List[Dict[str, str]],
         context: Optional[str] = None
     ) -> ChatResponse:
+        import asyncio
+
         system_msg = SYSTEM_PROMPT_ENGINEER
         if context:
             system_msg += f"\n\nCurrent job context:\n{context}"
-        try:
+        full_messages = [{"role": "system", "content": system_msg}] + messages
+
+        async def _call(model: str):
             response = await self._chat_completions_create(
-                model=self.model,
-                messages=[{"role": "system", "content": system_msg}] + messages,
+                model=model,
+                messages=full_messages,
                 max_completion_tokens=2048,
             )
             return ChatResponse(
                 content=response.choices[0].message.content,
-                model_used=self.model,
+                model_used=model,
                 usage={
                     "prompt_tokens": response.usage.prompt_tokens,
                     "completion_tokens": response.usage.completion_tokens,
                     "total_tokens": response.usage.total_tokens,
                 } if response.usage else {}
             )
-        except Exception as e:
-            logger.error(f"OpenAI chat error: {e}")
-            raise
+
+        # Transient overload/unavailable errors (e.g. 503 UNAVAILABLE) are retried
+        # with backoff, then as a last resort against the fast model.
+        max_attempts = 3
+        last_exc: Exception | None = None
+        for attempt in range(max_attempts):
+            try:
+                return await _call(self.model)
+            except Exception as e:
+                last_exc = e
+                transient = any(t in str(e) for t in ("503", "UNAVAILABLE", "overloaded"))
+                logger.error(f"OpenAI chat error (attempt {attempt + 1}/{max_attempts}): {e}")
+                if not transient or attempt == max_attempts - 1:
+                    break
+                await asyncio.sleep(2 ** attempt)
+
+        if self.model_fast and self.model_fast != self.model:
+            try:
+                logger.warning("Falling back to fast model %s after repeated overload errors", self.model_fast)
+                return await _call(self.model_fast)
+            except Exception as e:
+                logger.error(f"OpenAI chat fallback error: {e}")
+                last_exc = e
+
+        raise last_exc
 
     async def complete(self, prompt: str, max_tokens: int = 4000, temperature: float = 0.1) -> str:
         """Direct completion using raw OpenAI client with proper token param for newer models."""
@@ -507,3 +533,4 @@ class OpenAIProvider(AIProvider):
             max_completion_tokens=max_tokens,
         )
         return response.choices[0].message.content or ""
+

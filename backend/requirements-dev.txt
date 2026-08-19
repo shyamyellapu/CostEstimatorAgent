@@ -1,0 +1,5 @@
+# Test-only dependencies for the authentication test suite.
+# Install with: pip install -r requirements.txt -r requirements-dev.txt
+pytest>=8.0.0
+pytest-asyncio>=0.24.0
+httpx>=0.27.0

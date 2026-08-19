@@ -7,6 +7,7 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.deps import db_session
+from app.api.dependencies.permissions import require_permission
 from app.models import RateConfiguration
 from app.services.costing_engine import DEFAULT_RATES
 
@@ -23,7 +24,7 @@ class RateUpdate(BaseModel):
     description: Optional[str] = None
 
 
-@router.get("")
+@router.get("", dependencies=[Depends(require_permission("settings.read"))])
 async def get_settings(db: AsyncSession = Depends(db_session)):
     result = await db.execute(select(RateConfiguration).where(RateConfiguration.is_active == True))
     rates = result.scalars().all()
@@ -47,7 +48,7 @@ async def get_settings(db: AsyncSession = Depends(db_session)):
     }
 
 
-@router.put("")
+@router.put("", dependencies=[Depends(require_permission("settings.update"))])
 async def update_settings(updates: List[RateUpdate], db: AsyncSession = Depends(db_session)):
     updated = []
     for upd in updates:

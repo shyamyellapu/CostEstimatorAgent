@@ -23,6 +23,9 @@ steps:
     cd frontend
     npm run build
   displayName: 'Build Frontend'
+  env:
+    # Falls back to the hardcoded production backend URL in vite.config.ts/client.ts when unset.
+    VITE_BACKEND_URL: $(VITE_BACKEND_URL)
 
 - task: AzureStaticWebApp@0
   inputs:

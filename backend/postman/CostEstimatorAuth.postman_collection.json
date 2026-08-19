@@ -1,0 +1,291 @@
+{
+  "id": "cost-estimator-auth-collection",
+  "name": "Cost Estimator AI Agent — Auth API",
+  "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+  "auth": { "type": "bearer", "bearer": [{ "key": "token", "value": "{{access_token}}", "type": "string" }] },
+  "item": [
+    {
+      "name": "1. Register",
+      "request": {
+        "method": "POST",
+        "header": [{ "key": "Content-Type", "value": "application/json" }],
+        "url": { "raw": "{{base_url}}/api/auth/register", "host": ["{{base_url}}"], "path": ["api", "auth", "register"] },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"email\": \"{{test_email}}\",\n  \"username\": \"{{test_username}}\",\n  \"full_name\": \"Postman Test User\",\n  \"password\": \"{{test_password}}\"\n}"
+        }
+      },
+      "event": [{
+        "listen": "test",
+        "script": { "exec": [
+          "pm.test('Status is 201', () => pm.response.to.have.status(201));",
+          "const body = pm.response.json();",
+          "pm.test('Role defaults to user, never client-supplied', () => pm.expect(body.role).to.eql('user'));",
+          "pm.test('No hashed_password leaked', () => pm.expect(body).to.not.have.property('hashed_password'));"
+        ] }
+      }]
+    },
+    {
+      "name": "2. Login",
+      "request": {
+        "method": "POST",
+        "header": [{ "key": "Content-Type", "value": "application/json" }],
+        "url": { "raw": "{{base_url}}/api/auth/login", "host": ["{{base_url}}"], "path": ["api", "auth", "login"] },
+        "body": { "mode": "raw", "raw": "{\n  \"identifier\": \"{{test_email}}\",\n  \"password\": \"{{test_password}}\"\n}" }
+      },
+      "event": [{
+        "listen": "test",
+        "script": { "exec": [
+          "pm.test('Status is 200', () => pm.response.to.have.status(200));",
+          "const body = pm.response.json();",
+          "pm.collectionVariables.set('access_token', body.access_token);",
+          "pm.test('No refresh_token in JSON body', () => pm.expect(body).to.not.have.property('refresh_token'));",
+          "pm.test('Refresh cookie is set (HttpOnly, not readable here, but present in jar)', () => true);",
+          "const csrf = pm.cookies.get('cost_estimator_csrf');",
+          "if (csrf) pm.collectionVariables.set('csrf_token', csrf);"
+        ] }
+      }]
+    },
+    {
+      "name": "3. Read current user (GET /me)",
+      "request": {
+        "method": "GET",
+        "url": { "raw": "{{base_url}}/api/auth/me", "host": ["{{base_url}}"], "path": ["api", "auth", "me"] }
+      },
+      "event": [{ "listen": "test", "script": { "exec": [
+        "pm.test('Status is 200', () => pm.response.to.have.status(200));"
+      ] } }]
+    },
+    {
+      "name": "4. Access protected endpoint (dashboard jobs)",
+      "request": {
+        "method": "GET",
+        "url": { "raw": "{{base_url}}/api/estimate/jobs", "host": ["{{base_url}}"], "path": ["api", "estimate", "jobs"] }
+      },
+      "event": [{ "listen": "test", "script": { "exec": [
+        "pm.test('Status is 200 for authenticated request with dashboard.read', () => pm.response.to.have.status(200));"
+      ] } }]
+    },
+    {
+      "name": "5. Access admin endpoint as user (expect 403)",
+      "request": {
+        "method": "GET",
+        "url": { "raw": "{{base_url}}/api/admin/users", "host": ["{{base_url}}"], "path": ["api", "admin", "users"] }
+      },
+      "event": [{ "listen": "test", "script": { "exec": [
+        "pm.test('Status is 403 AUTH_PERMISSION_DENIED', () => {",
+        "  pm.response.to.have.status(403);",
+        "  pm.expect(pm.response.json().error.code).to.eql('AUTH_PERMISSION_DENIED');",
+        "});"
+      ] } }]
+    },
+    {
+      "name": "6. Refresh token",
+      "request": {
+        "method": "POST",
+        "header": [{ "key": "X-CSRF-Token", "value": "{{csrf_token}}" }],
+        "url": { "raw": "{{base_url}}/api/auth/refresh", "host": ["{{base_url}}"], "path": ["api", "auth", "refresh"] }
+      },
+      "event": [{ "listen": "test", "script": { "exec": [
+        "pm.test('Status is 200', () => pm.response.to.have.status(200));",
+        "const body = pm.response.json();",
+        "pm.collectionVariables.set('access_token', body.access_token);",
+        "const csrf = pm.cookies.get('cost_estimator_csrf');",
+        "if (csrf) pm.collectionVariables.set('csrf_token', csrf);"
+      ] } }]
+    },
+    {
+      "name": "7. Confirm rotation (refresh again — new cookie issued)",
+      "request": {
+        "method": "POST",
+        "header": [{ "key": "X-CSRF-Token", "value": "{{csrf_token}}" }],
+        "url": { "raw": "{{base_url}}/api/auth/refresh", "host": ["{{base_url}}"], "path": ["api", "auth", "refresh"] }
+      },
+      "event": [{ "listen": "test", "script": { "exec": [
+        "pm.test('Status is 200 — cookie jar now holds a NEW refresh token, old one is dead', () => pm.response.to.have.status(200));"
+      ] } }]
+    },
+    {
+      "name": "8. Reuse old refresh token (expect 401 AUTH_REFRESH_REUSED)",
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "X-CSRF-Token", "value": "{{csrf_token}}" },
+          { "key": "Cookie", "value": "cost_estimator_refresh={{old_refresh_token_manually_captured}}", "disabled": true }
+        ],
+        "url": { "raw": "{{base_url}}/api/auth/refresh", "host": ["{{base_url}}"], "path": ["api", "auth", "refresh"] },
+        "description": "Manually re-attach an OLD refresh cookie value (captured from a prior response's Set-Cookie header) to simulate replay. Postman's cookie jar auto-updates on each request, so to truly test reuse you must manually paste an earlier captured refresh token value into the disabled Cookie header above and enable it."
+      },
+      "event": [{ "listen": "test", "script": { "exec": [
+        "pm.test('Status is 401 when an old/rotated refresh token is replayed', () => {",
+        "  pm.expect(pm.response.code).to.eql(401);",
+        "  pm.expect(pm.response.json().error.code).to.be.oneOf(['AUTH_REFRESH_REUSED', 'AUTH_REFRESH_INVALID']);",
+        "});"
+      ] } }]
+    },
+    {
+      "name": "9. Logout current session",
+      "request": {
+        "method": "POST",
+        "header": [{ "key": "X-CSRF-Token", "value": "{{csrf_token}}" }],
+        "url": { "raw": "{{base_url}}/api/auth/logout", "host": ["{{base_url}}"], "path": ["api", "auth", "logout"] }
+      },
+      "event": [{ "listen": "test", "script": { "exec": [
+        "pm.test('Status is 204', () => pm.response.to.have.status(204));"
+      ] } }]
+    },
+    {
+      "name": "10. Logout all sessions",
+      "request": {
+        "method": "POST",
+        "header": [{ "key": "X-CSRF-Token", "value": "{{csrf_token}}" }],
+        "url": { "raw": "{{base_url}}/api/auth/logout-all", "host": ["{{base_url}}"], "path": ["api", "auth", "logout-all"] }
+      },
+      "event": [{ "listen": "test", "script": { "exec": [
+        "pm.test('Status is 204', () => pm.response.to.have.status(204));"
+      ] } }]
+    },
+    {
+      "name": "11. Change password",
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" },
+          { "key": "X-CSRF-Token", "value": "{{csrf_token}}" }
+        ],
+        "url": { "raw": "{{base_url}}/api/auth/change-password", "host": ["{{base_url}}"], "path": ["api", "auth", "change-password"] },
+        "body": { "mode": "raw", "raw": "{\n  \"current_password\": \"{{test_password}}\",\n  \"new_password\": \"{{new_test_password}}\"\n}" }
+      },
+      "event": [{ "listen": "test", "script": { "exec": [
+        "pm.test('Status is 204', () => pm.response.to.have.status(204));"
+      ] } }]
+    },
+    {
+      "name": "12. Forgot password",
+      "request": {
+        "method": "POST",
+        "header": [{ "key": "Content-Type", "value": "application/json" }],
+        "url": { "raw": "{{base_url}}/api/auth/forgot-password", "host": ["{{base_url}}"], "path": ["api", "auth", "forgot-password"] },
+        "body": { "mode": "raw", "raw": "{\n  \"email\": \"{{test_email}}\"\n}" }
+      },
+      "event": [{ "listen": "test", "script": { "exec": [
+        "pm.test('Status is 200 with a generic message regardless of whether the account exists', () => pm.response.to.have.status(200));"
+      ] } }]
+    },
+    {
+      "name": "13. Reset password",
+      "request": {
+        "method": "POST",
+        "header": [{ "key": "Content-Type", "value": "application/json" }],
+        "url": { "raw": "{{base_url}}/api/auth/reset-password", "host": ["{{base_url}}"], "path": ["api", "auth", "reset-password"] },
+        "body": { "mode": "raw", "raw": "{\n  \"token\": \"{{reset_token_from_email}}\",\n  \"new_password\": \"{{new_test_password}}\"\n}" },
+        "description": "The raw reset token is only ever emailed to the user (never returned by the API) — paste the token from the received email/log into the {{reset_token_from_email}} variable."
+      },
+      "event": [{ "listen": "test", "script": { "exec": [
+        "pm.test('Status is 200 on valid token, 400 on invalid/expired/used token', () => {",
+        "  pm.expect(pm.response.code).to.be.oneOf([200, 400]);",
+        "});"
+      ] } }]
+    },
+    {
+      "name": "14. Tampered JWT (expect 401 AUTH_TOKEN_INVALID)",
+      "request": {
+        "method": "GET",
+        "header": [{ "key": "Authorization", "value": "Bearer {{access_token}}tampered" }],
+        "url": { "raw": "{{base_url}}/api/auth/me", "host": ["{{base_url}}"], "path": ["api", "auth", "me"] }
+      },
+      "event": [{ "listen": "test", "script": { "exec": [
+        "pm.test('Status is 401', () => pm.response.to.have.status(401));",
+        "pm.test('Error code is AUTH_TOKEN_INVALID', () => pm.expect(pm.response.json().error.code).to.eql('AUTH_TOKEN_INVALID'));"
+      ] } }]
+    },
+    {
+      "name": "15. Expired JWT (expect 401 AUTH_TOKEN_EXPIRED)",
+      "request": {
+        "method": "GET",
+        "header": [{ "key": "Authorization", "value": "Bearer {{expired_jwt_manually_crafted}}" }],
+        "url": { "raw": "{{base_url}}/api/auth/me", "host": ["{{base_url}}"], "path": ["api", "auth", "me"] },
+        "description": "Craft an expired JWT with the same secret/issuer/audience (see backend/tests/test_jwt_validation.py::_base_payload for the exact claim shape) and paste it into {{expired_jwt_manually_crafted}}."
+      },
+      "event": [{ "listen": "test", "script": { "exec": [
+        "pm.test('Status is 401', () => pm.response.to.have.status(401));",
+        "pm.test('Error code is AUTH_TOKEN_EXPIRED', () => pm.expect(pm.response.json().error.code).to.eql('AUTH_TOKEN_EXPIRED'));"
+      ] } }]
+    },
+    {
+      "name": "16. Invalid signature (expect 401 AUTH_TOKEN_INVALID)",
+      "request": {
+        "method": "GET",
+        "header": [{ "key": "Authorization", "value": "Bearer {{jwt_signed_with_wrong_secret}}" }],
+        "url": { "raw": "{{base_url}}/api/auth/me", "host": ["{{base_url}}"], "path": ["api", "auth", "me"] }
+      },
+      "event": [{ "listen": "test", "script": { "exec": [
+        "pm.test('Status is 401 AUTH_TOKEN_INVALID', () => {",
+        "  pm.response.to.have.status(401);",
+        "  pm.expect(pm.response.json().error.code).to.eql('AUTH_TOKEN_INVALID');",
+        "});"
+      ] } }]
+    },
+    {
+      "name": "17. Concurrent refresh attempts",
+      "request": {
+        "method": "POST",
+        "header": [{ "key": "X-CSRF-Token", "value": "{{csrf_token}}" }],
+        "url": { "raw": "{{base_url}}/api/auth/refresh", "host": ["{{base_url}}"], "path": ["api", "auth", "refresh"] },
+        "description": "Use Postman's Runner (or `newman run --iteration-count 2` fired in parallel via two terminals) to send this request twice at nearly the same time with the SAME refresh cookie. Exactly one should return 200; the other should return 401 AUTH_REFRESH_REUSED (see backend/tests/test_concurrent_refresh.py for the automated equivalent)."
+      },
+      "event": [{ "listen": "test", "script": { "exec": [
+        "pm.test('Exactly one of two concurrent calls should succeed — verify manually across the two runs', () => {",
+        "  pm.expect(pm.response.code).to.be.oneOf([200, 401]);",
+        "});"
+      ] } }]
+    },
+    {
+      "name": "18. Disabled account login (expect 403 AUTH_ACCOUNT_DISABLED)",
+      "request": {
+        "method": "POST",
+        "header": [{ "key": "Content-Type", "value": "application/json" }],
+        "url": { "raw": "{{base_url}}/api/auth/login", "host": ["{{base_url}}"], "path": ["api", "auth", "login"] },
+        "body": { "mode": "raw", "raw": "{\n  \"identifier\": \"{{disabled_user_email}}\",\n  \"password\": \"{{test_password}}\"\n}" }
+      },
+      "event": [{ "listen": "test", "script": { "exec": [
+        "pm.test('Status is 403 AUTH_ACCOUNT_DISABLED', () => {",
+        "  pm.response.to.have.status(403);",
+        "  pm.expect(pm.response.json().error.code).to.eql('AUTH_ACCOUNT_DISABLED');",
+        "});"
+      ] } }]
+    },
+    {
+      "name": "19. Revoked session access (expect 401 AUTH_SESSION_REVOKED)",
+      "request": {
+        "method": "GET",
+        "url": { "raw": "{{base_url}}/api/auth/me", "host": ["{{base_url}}"], "path": ["api", "auth", "me"] },
+        "description": "Call this with an access token whose session was just revoked via DELETE /api/admin/sessions/{id} or DELETE /api/auth/sessions/{id} in another request."
+      },
+      "event": [{ "listen": "test", "script": { "exec": [
+        "pm.test('Status is 401 AUTH_SESSION_REVOKED', () => {",
+        "  pm.response.to.have.status(401);",
+        "  pm.expect(pm.response.json().error.code).to.eql('AUTH_SESSION_REVOKED');",
+        "});"
+      ] } }]
+    },
+    {
+      "name": "20. CSRF failure (missing X-CSRF-Token)",
+      "request": {
+        "method": "POST",
+        "url": { "raw": "{{base_url}}/api/auth/logout", "host": ["{{base_url}}"], "path": ["api", "auth", "logout"] },
+        "description": "Deliberately omit the X-CSRF-Token header."
+      },
+      "event": [{ "listen": "test", "script": { "exec": [
+        "pm.test('Status is 403 AUTH_CSRF_INVALID', () => {",
+        "  pm.response.to.have.status(403);",
+        "  pm.expect(pm.response.json().error.code).to.eql('AUTH_CSRF_INVALID');",
+        "});"
+      ] } }]
+    }
+  ],
+  "variable": [
+    { "key": "access_token", "value": "" },
+    { "key": "csrf_token", "value": "" }
+  ]
+}

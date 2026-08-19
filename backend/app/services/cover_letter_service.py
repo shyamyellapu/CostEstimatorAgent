@@ -440,7 +440,7 @@ class CoverLetterService:
 
         bilal_img  = _sig_img("BilalAhmed Signature.jpg")
         datta_img  = _sig_img("Datta C.Sawant Signature.jpg")
-        subash_img = _sig_img("subash Valrani Signature.jpg")
+        arjun_img  = _sig_img("arjun-sign-cropped.png")
 
         # Bilal: left-aligned signature, name/title
         story.append(Spacer(1, 10))  # BILAL_GAP
@@ -449,13 +449,13 @@ class CoverLetterService:
         story.append(Paragraph("Cost &amp; Estimation Engineer.", body_style))
         story.append(Spacer(1, 14))  # DATTA_GAP
 
-        # Datta + Subash side-by-side
+        # Datta + Arjun side-by-side
         half = frame_width / 2
         sig_table = Table(
             [
-                [datta_img, subash_img],
+                [datta_img, arjun_img],
                 [Paragraph("<b>Datta C. Sawant</b>", bold_style),
-                 Paragraph("<b>Subash Valrani</b>", bold_style)],
+                 Paragraph("<b>Arjun Gopakumar</b>", bold_style)],
                 [Paragraph("Sr. Mechanical Engineer", body_style),
                  Paragraph("Business Unit Head", body_style)],
             ],

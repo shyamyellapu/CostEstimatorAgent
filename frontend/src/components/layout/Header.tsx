@@ -1,5 +1,7 @@
-import { useLocation } from 'react-router-dom'
-import { Menu, Bell, Search } from 'lucide-react'
+import { useState } from 'react'
+import { useLocation, useNavigate } from 'react-router-dom'
+import { Menu, Bell, Search, LogOut, User as UserIcon } from 'lucide-react'
+import { useAuth } from '../../hooks/useAuth'
 
 const routeLabels: Record<string, string> = {
   '/dashboard':        'Dashboard',
@@ -11,15 +13,31 @@ const routeLabels: Record<string, string> = {
   '/cover-letter':     'Cover Letter Generator',
   '/history':          'Job History',
   '/settings':         'Settings',
+  '/admin/users':      'User Management',
+  '/sessions':         'Active Sessions',
 }
 
 interface HeaderProps {
   onMenuClick: () => void
 }
 
+function initials(name: string): string {
+  const parts = name.trim().split(/\s+/)
+  return ((parts[0]?.[0] ?? '') + (parts[1]?.[0] ?? '')).toUpperCase() || 'U'
+}
+
 export default function Header({ onMenuClick }: HeaderProps) {
   const { pathname } = useLocation()
+  const navigate = useNavigate()
+  const { user, logout } = useAuth()
+  const [menuOpen, setMenuOpen] = useState(false)
   const label = routeLabels[pathname] || routeLabels[`/${pathname.split('/')[1]}`] || 'Cost Estimator'
+
+  async function handleLogout() {
+    setMenuOpen(false)
+    await logout()
+    navigate('/login', { replace: true })
+  }
 
   return (
     <header className="page-header">
@@ -65,18 +83,58 @@ export default function Header({ onMenuClick }: HeaderProps) {
           }} />
         </button>
 
-        {/* Avatar */}
-        <div style={{
-          width: 32, height: 32,
-          background: 'linear-gradient(135deg, var(--primary-600), var(--primary-800))',
-          borderRadius: '50%',
-          display: 'flex', alignItems: 'center', justifyContent: 'center',
-          color: 'white', fontSize: '0.8rem', fontWeight: 700,
-          cursor: 'pointer', flexShrink: 0,
-        }}>
-          CE
+        {/* User menu */}
+        <div style={{ position: 'relative' }}>
+          <button
+            onClick={() => setMenuOpen((v) => !v)}
+            aria-label="Account menu"
+            style={{
+              width: 32, height: 32,
+              background: 'linear-gradient(135deg, var(--primary-600), var(--primary-800))',
+              borderRadius: '50%', border: 'none',
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              color: 'white', fontSize: '0.8rem', fontWeight: 700,
+              cursor: 'pointer', flexShrink: 0,
+            }}
+          >
+            {user ? initials(user.full_name) : <UserIcon size={14} />}
+          </button>
+
+          {menuOpen && (
+            <>
+              <div
+                onClick={() => setMenuOpen(false)}
+                style={{ position: 'fixed', inset: 0, zIndex: 40 }}
+              />
+              <div
+                className="card"
+                style={{
+                  position: 'absolute', right: 0, top: '2.5rem', width: 220, zIndex: 50,
+                  padding: '0.5rem', boxShadow: 'var(--shadow-lg)',
+                }}
+              >
+                {user && (
+                  <div style={{ padding: '0.5rem 0.625rem', borderBottom: '1px solid var(--border)', marginBottom: '0.25rem' }}>
+                    <div style={{ fontWeight: 700, fontSize: '0.875rem' }}>{user.full_name}</div>
+                    <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>{user.email}</div>
+                    <span className="badge badge-primary" style={{ marginTop: 4 }}>{user.role}</span>
+                  </div>
+                )}
+                <button
+                  className="nav-item" style={{ width: '100%' }}
+                  onClick={() => { setMenuOpen(false); navigate('/sessions') }}
+                >
+                  Active Sessions
+                </button>
+                <button className="nav-item" style={{ width: '100%', color: 'var(--error-600)' }} onClick={handleLogout}>
+                  <LogOut size={16} className="nav-icon" /> Sign out
+                </button>
+              </div>
+            </>
+          )}
         </div>
       </div>
     </header>
   )
 }
+

@@ -1,9 +1,10 @@
-import { useCallback, useState } from 'react'
+import { useCallback, useEffect, useState, type Dispatch, type SetStateAction, type ChangeEvent } from 'react'
 import { useDropzone } from 'react-dropzone'
+import { useNavigate, useParams } from 'react-router-dom'
 import { api } from '../api/client'
 import {
   AlertTriangle, CheckCircle, Clock, FileText,
-  RefreshCw, Upload, XCircle, Download, Lock,
+  RefreshCw, Upload, XCircle, Download,
   FileSpreadsheet, Info,
 } from 'lucide-react'
 
@@ -70,6 +71,7 @@ interface WorkflowResult {
   bom_items: BomItem[]
   total_steel_kg: number
   costing: Costing
+  customer_info?: Record<string, string> | null
   overall_confidence: number
   summary: string
   flags: Flag[]
@@ -129,12 +131,121 @@ function ProcessingProgress({ steps }: { steps: Step[] }) {
 
 type Tab = 'bom' | 'costing' | 'summary'
 
+type ManualForm = {
+  structural_steel_kg: string
+  handrail_kg: string
+  grating_kg: string
+  bolts_qty: string
+  paint_litres: string
+  project_name: string
+  client_name: string
+  drawing_number: string
+}
+
+function ManualEntryPanel({
+  manualForm, setManualForm, markupPct, setMarkupPct, onSubmit, onBack, loading,
+}: {
+  manualForm: ManualForm
+  setManualForm: Dispatch<SetStateAction<ManualForm>>
+  markupPct: number
+  setMarkupPct: (n: number) => void
+  onSubmit: () => void
+  onBack: () => void
+  loading: boolean
+}) {
+  const update = (field: keyof ManualForm) => (e: ChangeEvent<HTMLInputElement>) =>
+    setManualForm(prev => ({ ...prev, [field]: e.target.value }))
+
+  const canSubmit = parseFloat(manualForm.structural_steel_kg) > 0 && !loading
+
+  return (
+    <div className="card" style={{ marginTop: '1.5rem' }}>
+      <div className="card-header"><h3 className="card-title">Manual BOQ Entry</h3></div>
+      <div className="card-body" style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+
+        <div className="form-group">
+          <label className="form-label">Structural Steel Total Weight (kg) *</label>
+          <input
+            type="number" min={0} className="form-input"
+            value={manualForm.structural_steel_kg}
+            onChange={update('structural_steel_kg')}
+          />
+        </div>
+
+        <div>
+          <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginBottom: '0.5rem' }}>
+            Optional — leave blank to use ratio-based estimates
+          </p>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem' }}>
+            <div className="form-group">
+              <label className="form-label">Handrails (kg)</label>
+              <input type="number" min={0} className="form-input" value={manualForm.handrail_kg} onChange={update('handrail_kg')} />
+            </div>
+            <div className="form-group">
+              <label className="form-label">Grating (kg)</label>
+              <input type="number" min={0} className="form-input" value={manualForm.grating_kg} onChange={update('grating_kg')} />
+            </div>
+            <div className="form-group">
+              <label className="form-label">M20×90 Bolts (qty)</label>
+              <input type="number" min={0} className="form-input" value={manualForm.bolts_qty} onChange={update('bolts_qty')} />
+            </div>
+            <div className="form-group">
+              <label className="form-label">Paint Material (litres)</label>
+              <input type="number" min={0} className="form-input" value={manualForm.paint_litres} onChange={update('paint_litres')} />
+            </div>
+          </div>
+        </div>
+
+        <div>
+          <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginBottom: '0.5rem' }}>
+            Project Information (optional)
+          </p>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '0.75rem' }}>
+            <div className="form-group">
+              <label className="form-label">Project Name</label>
+              <input className="form-input" value={manualForm.project_name} onChange={update('project_name')} />
+            </div>
+            <div className="form-group">
+              <label className="form-label">Client Name</label>
+              <input className="form-input" value={manualForm.client_name} onChange={update('client_name')} />
+            </div>
+            <div className="form-group">
+              <label className="form-label">Drawing Number</label>
+              <input className="form-input" value={manualForm.drawing_number} onChange={update('drawing_number')} />
+            </div>
+          </div>
+        </div>
+
+        <div className="form-group" style={{ maxWidth: 300 }}>
+          <label className="form-label">Markup %: {markupPct}%</label>
+          <input
+            type="range" min={0} max={80} value={markupPct}
+            onChange={e => setMarkupPct(Number(e.target.value))}
+            style={{ width: '100%' }}
+          />
+        </div>
+
+        <div style={{ display: 'flex', justifyContent: 'space-between', gap: '0.75rem' }}>
+          <button className="btn btn-ghost" onClick={onBack} disabled={loading}>
+            ← Back to Upload
+          </button>
+          <button className="btn btn-primary" onClick={onSubmit} disabled={!canSubmit}>
+            {loading ? 'Generating…' : 'Generate Costing Sheet →'}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 export default function DrawingCosting() {
+  const { jobId } = useParams<{ jobId?: string }>()
+  const navigate = useNavigate()
   const [files, setFiles] = useState<File[]>([])
   const [markupPct, setMarkupPct] = useState(34)
   const [loading, setLoading] = useState(false)
+  const [loadingReview, setLoadingReview] = useState(!!jobId)
   const [exporting, setExporting] = useState(false)
-  const [approving, setApproving] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [result, setResult] = useState<WorkflowResult | null>(null)
   const [activeTab, setActiveTab] = useState<Tab>('bom')
@@ -142,6 +253,50 @@ export default function DrawingCosting() {
   const [customer, setCustomer] = useState({
     customerName: '', refNo: '', enquiryNo: '', jobNo: '', attention: '', contact: '',
   })
+  const [showCustomerModal, setShowCustomerModal] = useState(false)
+  const [showManualEntry, setShowManualEntry] = useState(false)
+  const [manualForm, setManualForm] = useState({
+    structural_steel_kg: '',
+    handrail_kg: '',
+    grating_kg: '',
+    bolts_qty: '',
+    paint_litres: '',
+    project_name: '',
+    client_name: '',
+    drawing_number: '',
+  })
+
+  // Reopening a previously-created job from Job History — load its saved review
+  // state (BOM items + costing) instead of showing the upload screen.
+  useEffect(() => {
+    if (!jobId) return
+    let cancelled = false
+    setLoadingReview(true)
+    setError(null)
+    console.log(`%c[DrawingCosting] Reopening job ${jobId}`, 'color:#6366f1')
+    api.get(`/drawing-costing/${jobId}/review?markup_pct=${markupPct}`)
+      .then(res => {
+        if (cancelled) return
+        const data: WorkflowResult = res.data
+        setResult(data)
+        setMarkupPct(data.markup_pct ?? 34)
+        setCustomer(prev => ({ ...prev, jobNo: data.job_number, ...(data.customer_info || {}) }))
+        setActiveTab('bom')
+        console.log('[DrawingCosting] Reopened job:', data)
+      })
+      .catch(e => {
+        if (cancelled) return
+        console.error('[DrawingCosting] Failed to load job for review:', e?.response?.data?.detail || e?.message)
+        setError(e?.response?.data?.detail || 'Could not load this job.')
+      })
+      .finally(() => {
+        if (!cancelled) setLoadingReview(false)
+      })
+    return () => { cancelled = true }
+    // Only re-run when the route's jobId changes — markupPct is intentionally
+    // captured once at load time, not on every slider tick.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [jobId])
 
   // New 4-step pipeline matching LlamaParse → LLM flow
   const processingSteps: Step[] = [
@@ -263,12 +418,39 @@ export default function DrawingCosting() {
 
     } catch (e: any) {
       clearTimeout(t0)
-      const msg = e?.response?.data?.detail || e?.message || 'Analysis failed'
-      console.error('%c[DrawingCosting] ✗ Error:', 'color:#ef4444;font-weight:bold', msg)
+      const msg = 'The AI pipeline could not extract data from this document. You can enter the quantities manually to generate the costing sheet.'
+      console.error('%c[DrawingCosting] ✗ Error:', 'color:#ef4444;font-weight:bold', e?.response?.data?.detail || e?.message)
       console.error('Full error:', e)
       console.timeEnd('[DrawingCosting] Total time')
       console.groupEnd()
       setError(msg)
+      setShowManualEntry(true)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const handleManualEntry = async () => {
+    setLoading(true)
+    setError(null)
+    try {
+      const payload = {
+        structural_steel_kg: parseFloat(manualForm.structural_steel_kg),
+        handrail_kg:  manualForm.handrail_kg  ? parseFloat(manualForm.handrail_kg)  : null,
+        grating_kg:   manualForm.grating_kg   ? parseFloat(manualForm.grating_kg)   : null,
+        bolts_qty:    manualForm.bolts_qty    ? parseFloat(manualForm.bolts_qty)    : null,
+        paint_litres: manualForm.paint_litres ? parseFloat(manualForm.paint_litres) : null,
+        markup_pct:   markupPct,
+        project_name:   manualForm.project_name   || null,
+        client_name:    manualForm.client_name    || null,
+        drawing_number: manualForm.drawing_number || null,
+      }
+      const res = await api.post('/drawing-costing/manual-entry', payload)
+      setResult(res.data)
+      setActiveTab('bom')
+      setShowManualEntry(false)
+    } catch (e: any) {
+      setError(e?.response?.data?.detail || 'Failed to create manual costing entry.')
     } finally {
       setLoading(false)
     }
@@ -297,25 +479,15 @@ export default function DrawingCosting() {
     }
   }
 
-  const handleApprove = async () => {
+  // "Generate Excel" always opens the customer-info modal first — customer details are required
+  // by the backend (and persisted to the job) before a costing sheet can be produced.
+  const handleGenerateExcel = () => {
     if (!result) return
-    setApproving(true)
     setError(null)
-    console.log(`%c[DrawingCosting] Approving job ${result.job_id}`, 'color:#22c55e')
-    try {
-      await api.post(`/drawing-costing/${result.job_id}/approve`)
-      console.log('[DrawingCosting] Job approved ✓')
-      setResult(prev => prev ? { ...prev, status: 'approved', can_generate_excel: true } : null)
-    } catch (e: any) {
-      const msg = e?.response?.data?.detail || e?.message
-      console.error('[DrawingCosting] Approve failed:', msg)
-      setError(msg)
-    } finally {
-      setApproving(false)
-    }
+    setShowCustomerModal(true)
   }
 
-  const handleGenerateExcel = async () => {
+  const doGenerateExcel = async () => {
     if (!result) return
     setExporting(true)
     setError(null)
@@ -332,9 +504,18 @@ export default function DrawingCosting() {
       a.download = `JobCosting_${customer.jobNo || result.job_number}.xlsx`
       a.click()
       URL.revokeObjectURL(url)
+      setShowCustomerModal(false)
       console.log('[DrawingCosting] Excel downloaded ✓')
     } catch (e: any) {
-      const msg = e?.response?.data?.detail || e?.message
+      // With responseType: 'blob', an error response body arrives as a Blob, not JSON.
+      let msg = e?.message
+      if (e?.response?.data instanceof Blob) {
+        try {
+          msg = JSON.parse(await e.response.data.text())?.detail || msg
+        } catch { /* not JSON — keep the generic message */ }
+      } else {
+        msg = e?.response?.data?.detail || msg
+      }
       console.error('[DrawingCosting] Excel generation failed:', msg)
       setError(msg)
     } finally {
@@ -365,6 +546,28 @@ export default function DrawingCosting() {
     : ['docx', 'doc'].includes(ext) ? 'docx'
     : 'other'
 
+  // ── LOADING (reopening an existing job) ──────────────────────────
+  if (jobId && loadingReview) {
+    return (
+      <div className="page-body" style={{ maxWidth: 700, margin: '0 auto', padding: '3rem 1.5rem', textAlign: 'center' }}>
+        <div className="spinner spinner-lg" style={{ margin: '0 auto' }} />
+        <p style={{ marginTop: '1rem', color: 'var(--text-muted)' }}>Loading job…</p>
+      </div>
+    )
+  }
+
+  // ── FAILED TO REOPEN AN EXISTING JOB ─────────────────────────────
+  if (jobId && !result) {
+    return (
+      <div className="page-body" style={{ maxWidth: 700, margin: '0 auto', padding: '1.5rem' }}>
+        <div className="alert alert-error">{error || 'Could not load this job.'}</div>
+        <button className="btn btn-secondary" style={{ marginTop: '1rem' }} onClick={() => navigate('/history')}>
+          ← Back to Job History
+        </button>
+      </div>
+    )
+  }
+
   // ── UPLOAD SCREEN ──────────────────────────────────────────────
   if (!result) {
     return (
@@ -376,6 +579,20 @@ export default function DrawingCosting() {
           </p>
         </div>
 
+        {showManualEntry ? (
+          <>
+            {error && <div className="alert alert-error" style={{ marginTop: '1.5rem' }}>{error}</div>}
+            <ManualEntryPanel
+              manualForm={manualForm}
+              setManualForm={setManualForm}
+              markupPct={markupPct}
+              setMarkupPct={setMarkupPct}
+              onSubmit={handleManualEntry}
+              onBack={() => setShowManualEntry(false)}
+              loading={loading}
+            />
+          </>
+        ) : (
         <div className="card" style={{ marginTop: '1.5rem' }}>
           <div className="card-body">
             {/* Drop zone */}
@@ -431,7 +648,16 @@ export default function DrawingCosting() {
               </div>
             )}
 
-            {error && <div className="alert alert-error" style={{ marginTop: '1rem' }}>{error}</div>}
+            {error && (
+              <div className="alert alert-error" style={{ marginTop: '1rem' }}>
+                <span>{error}</span>
+                {!showManualEntry && (
+                  <button className="btn btn-primary btn-sm" style={{ marginLeft: '0.75rem' }} onClick={() => setShowManualEntry(true)}>
+                    Enter Details Manually
+                  </button>
+                )}
+              </div>
+            )}
 
             <button
               className="btn btn-primary btn-lg"
@@ -446,6 +672,7 @@ export default function DrawingCosting() {
             </button>
           </div>
         </div>
+        )}
       </div>
     )
   }
@@ -454,7 +681,7 @@ export default function DrawingCosting() {
   const reviewCount = result.bom_items.filter(i => i.review_required).length
   const tabs: { id: Tab; label: string; count?: number }[] = [
     { id: 'bom',     label: 'BOM Items',  count: result.bom_items.length },
-    { id: 'costing', label: 'Costing' },
+    { id: 'costing', label: 'Customer Information' },
     { id: 'summary', label: 'Summary' },
   ]
 
@@ -479,12 +706,19 @@ export default function DrawingCosting() {
             )}
           </p>
         </div>
-        <button
-          className="btn btn-ghost btn-sm"
-          onClick={() => { setResult(null); setFiles([]); setProcessingStep(0) }}
-        >
-          ← New Analysis
-        </button>
+        <div style={{ display: 'flex', gap: '0.5rem' }}>
+          {jobId && (
+            <button className="btn btn-ghost btn-sm" onClick={() => navigate('/history')}>
+              ← Job History
+            </button>
+          )}
+          <button
+            className="btn btn-ghost btn-sm"
+            onClick={() => { navigate('/drawing-costing'); setResult(null); setFiles([]); setProcessingStep(0) }}
+          >
+            ← New Analysis
+          </button>
+        </div>
       </div>
 
       {/* Confidence strip */}
@@ -505,12 +739,6 @@ export default function DrawingCosting() {
 
       {/* Action buttons */}
       <div style={{ display: 'flex', gap: '0.625rem', flexWrap: 'wrap', marginBottom: '1rem' }}>
-        <button className="btn btn-secondary" onClick={handleRecalculate} disabled={loading}>
-          <RefreshCw size={14} className={loading ? 'spin' : ''} /> Recalculate
-        </button>
-        <button className="btn btn-secondary" onClick={handleApprove} disabled={approving}>
-          <Lock size={14} /> {approving ? 'Approving…' : 'Approve'}
-        </button>
         <button className="btn btn-success" onClick={handleGenerateExcel} disabled={exporting}>
           <FileSpreadsheet size={14} /> {exporting ? 'Generating…' : 'Generate Excel'}
         </button>
@@ -542,9 +770,26 @@ export default function DrawingCosting() {
       {activeTab === 'bom' && (
         <>
           {result.bom_items.length === 0 ? (
-            <div className="alert alert-warning" style={{ marginTop: '1rem' }}>
-              No BOM items were extracted. Check console (F12) for details on what the LLM returned.
-            </div>
+            <>
+              <div className="alert alert-warning" style={{ marginTop: '1rem', display: 'flex', alignItems: 'center', gap: '0.625rem' }}>
+                <AlertTriangle size={16} />
+                <span>No quantities were extracted from this document.</span>
+                <button className="btn btn-primary btn-sm" onClick={() => setShowManualEntry(true)}>
+                  Enter Details Manually
+                </button>
+              </div>
+              {showManualEntry && (
+                <ManualEntryPanel
+                  manualForm={manualForm}
+                  setManualForm={setManualForm}
+                  markupPct={markupPct}
+                  setMarkupPct={setMarkupPct}
+                  onSubmit={handleManualEntry}
+                  onBack={() => setShowManualEntry(false)}
+                  loading={loading}
+                />
+              )}
+            </>
           ) : (
             <div className="table-container">
               <table className="data-table">
@@ -775,6 +1020,57 @@ export default function DrawingCosting() {
               </div>
             </div>
           )}
+        </div>
+      )}
+
+      {/* Customer information modal — required before generating the costing sheet */}
+      {showCustomerModal && (
+        <div
+          style={{
+            position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.45)',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            zIndex: 1000, padding: '1rem',
+          }}
+          onClick={() => !exporting && setShowCustomerModal(false)}
+        >
+          <div
+            className="card"
+            style={{ maxWidth: 480, width: '100%', maxHeight: '90vh', overflowY: 'auto' }}
+            onClick={e => e.stopPropagation()}
+          >
+            <div className="card-header">
+              <h3 className="card-title">Customer Information</h3>
+              <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)', margin: 0 }}>
+                Required before generating the costing sheet — saved to this job for next time.
+              </p>
+            </div>
+            <div className="card-body" style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+              {Object.entries(customer).map(([k, v]) => (
+                <div key={k} className="form-group">
+                  <label className="form-label">
+                    {k.replace(/([A-Z])/g, ' $1').trim()}{k === 'customerName' && ' *'}
+                  </label>
+                  <input
+                    className="form-input" value={v}
+                    onChange={e => setCustomer(prev => ({ ...prev, [k]: e.target.value }))}
+                  />
+                </div>
+              ))}
+              {error && <div className="alert alert-error">{error}</div>}
+              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.625rem', marginTop: '0.5rem' }}>
+                <button className="btn btn-ghost" onClick={() => setShowCustomerModal(false)} disabled={exporting}>
+                  Cancel
+                </button>
+                <button
+                  className="btn btn-success"
+                  onClick={doGenerateExcel}
+                  disabled={exporting || !customer.customerName.trim()}
+                >
+                  <FileSpreadsheet size={14} /> {exporting ? 'Generating…' : 'Confirm & Generate'}
+                </button>
+              </div>
+            </div>
+          </div>
         </div>
       )}
     </div>

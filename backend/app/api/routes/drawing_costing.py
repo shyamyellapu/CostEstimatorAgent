@@ -55,6 +55,41 @@ def _safe_job_no(s: str) -> str:
     return "".join(c for c in str(s) if c.isalnum() or c in "-_.")
 
 
+def _deterministic_weight_from_vision(extraction) -> float:
+    """
+    Sum a deterministic steel weight straight from a vision extraction's
+    structural_elements/dimensions — bypasses the second LLM hop that would
+    otherwise have to re-read its own JSON dump to guess a total.
+    """
+    from app.services.weight_calculator import calculate_weight
+
+    total = 0.0
+    elements = list(getattr(extraction, "structural_elements", None) or []) or \
+        list(getattr(extraction, "dimensions", None) or [])
+    for el in elements:
+        d = el.model_dump() if hasattr(el, "model_dump") else dict(el)
+        qty = float(d.get("quantity") or 1)
+        length_mm = d.get("length_mm")
+        unit_wt = float(d.get("unit_weight_kg_per_m") or 0)
+        pre_wt = float(d.get("total_weight_kg") or 0)
+        if unit_wt > 0 and length_mm:
+            total += unit_wt * (float(length_mm) / 1000.0) * qty
+        elif pre_wt > 0:
+            total += pre_wt
+        elif length_mm:
+            try:
+                w_res = calculate_weight(
+                    section_type=d.get("section_type") or "plate",
+                    quantity=qty, length_mm=length_mm,
+                    width_mm=d.get("width_mm"), thickness_mm=d.get("thickness_mm"),
+                    od_mm=d.get("od_mm"),
+                )
+                total += w_res.weight_kg
+            except Exception:
+                pass
+    return round(total, 2)
+
+
 # ---------------------------------------------------------------------------
 # POST /analyse
 # ---------------------------------------------------------------------------
@@ -79,6 +114,7 @@ async def analyse_drawing(
     job_id = str(job.id)
 
     combined_markdown_parts: List[str] = []
+    vision_calc_kg_total = 0.0
 
     for upload in files:
         fname = upload.filename or "upload"
@@ -176,6 +212,7 @@ async def analyse_drawing(
                     default=str,
                 )
                 combined_markdown_parts.append(f"## File: {fname} (vision fallback)\n\n{fb_text}")
+                vision_calc_kg_total += _deterministic_weight_from_vision(extracted_fb)
                 uf.processing_status = "completed"
                 uf.is_processed = "done"
                 logger.info("Job %s: vision fallback produced %d chars for '%s'", job_id, len(fb_text), fname)
@@ -282,8 +319,65 @@ async def analyse_drawing(
 
     # 1. Structural Steel
     ss = extracted.get("structural_steel") or {}
-    ss_kg = float(ss.get("weight_kg") or 0)
+    ss_kg_llm = float(ss.get("weight_kg") or 0)
     ss_conf = float(ss.get("confidence") or 0.8)
+
+    # Report exactly what the AI (LlamaParse + LLM) extracted as the structural
+    # steel total — never silently substitute a Python-recomputed value. The
+    # line-item sum is still computed and compared purely to flag a mismatch
+    # for manual review; it never overrides the reported total.
+    weight_flags: List[Dict[str, Any]] = []
+    ss_line_items = [li for li in (ss.get("line_items") or []) if isinstance(li, dict)]
+    ss_kg_summed = round(sum(float(li.get("weight_kg") or 0) for li in ss_line_items), 2)
+
+    if ss_kg_summed > 0 and ss_kg_llm > 0:
+        discrepancy = abs(ss_kg_summed - ss_kg_llm) / max(ss_kg_summed, ss_kg_llm)
+        if discrepancy > 0.15:
+            logger.warning(
+                "Job %s: structural steel weight mismatch — stated total=%.2f kg vs "
+                "Python-summed line items=%.2f kg (%.0f%% diff). Keeping stated total.",
+                job_id, ss_kg_llm, ss_kg_summed, discrepancy * 100,
+            )
+            weight_flags.append({
+                "field": "structural_steel.weight_kg",
+                "message": (
+                    f"AI reported a stated total of {ss_kg_llm:.1f} kg but the individual "
+                    f"line items it extracted sum to {ss_kg_summed:.1f} kg — keeping the "
+                    "stated total. Please verify against the drawing."
+                ),
+                "severity": "high",
+            })
+        ss_kg = ss_kg_llm
+    elif ss_kg_summed > 0:
+        ss_kg = ss_kg_summed
+    else:
+        ss_kg = ss_kg_llm
+
+    # Second, independent cross-check: for uploaded drawings (no BOQ table),
+    # LlamaParse falls back to vision extraction with real per-member geometry.
+    # That JSON then gets re-summarised by this same LLM call, which can drift
+    # from the geometry it just extracted — trust the geometry-derived sum
+    # whenever it disagrees materially with whatever this call settled on.
+    if vision_calc_kg_total > 0 and ss_kg > 0:
+        vis_discrepancy = abs(vision_calc_kg_total - ss_kg) / max(vision_calc_kg_total, ss_kg)
+        if vis_discrepancy > 0.15:
+            logger.warning(
+                "Job %s: structural steel weight mismatch — BOQ summary=%.2f kg vs "
+                "vision-extracted geometry sum=%.2f kg (%.0f%% diff). Keeping BOQ summary.",
+                job_id, ss_kg, vision_calc_kg_total, vis_discrepancy * 100,
+            )
+            weight_flags.append({
+                "field": "structural_steel.weight_kg",
+                "message": (
+                    f"BOQ summary reported {ss_kg:.1f} kg but the per-member geometry "
+                    f"extracted from the drawing sums to {vision_calc_kg_total:.1f} kg — "
+                    "keeping the BOQ summary. Please verify against the drawing."
+                ),
+                "severity": "high",
+            })
+    elif vision_calc_kg_total > 0 and ss_kg == 0:
+        ss_kg = vision_calc_kg_total
+
     if ss_kg > 0:
         _add_bom(
             description=f"Structural Steel Material — {ss.get('source_description', '')}",
@@ -332,25 +426,27 @@ async def analyse_drawing(
             category="bolt",
             weight_kg=None,
             qty=float(bl.get("qty") or 0),
-            confidence=0.9,
+            confidence=float(bl.get("confidence") or 0.9),
         )
     for ob in (bl.get("other_bolts") or []):
         # Handle both dict and string formats from LLM response
         if isinstance(ob, dict):
             desc = ob.get("description") or f"{ob.get('size', 'Bolt')} Gr.{ob.get('grade', '8.8')}"
             qty = float(ob.get("qty") or 0)
+            ob_conf = float(ob.get("confidence") or 0.8)
         else:
-            # LLM returned a simple string like "M16" or "M20"
+            # LLM returned a simple string like "M16" or "M20" — no per-item confidence given
             desc = str(ob)
             qty = 0  # No quantity specified
-        
+            ob_conf = 0.8
+
         if qty > 0:  # Only add if qty is specified
             _add_bom(
                 description=desc,
                 category="bolt",
                 weight_kg=None,
                 qty=qty,
-                confidence=0.8,
+                confidence=ob_conf,
             )
 
     # 5. Paint Material
@@ -380,6 +476,8 @@ async def analyse_drawing(
     # Deterministic costing
     costing = _compute_costing(total_steel_kg, markup_pct / 100.0)
 
+    # Report exactly what the LLM self-assessed — the weight_flags list (surfaced
+    # in the Summary tab) is how a mismatch gets flagged, not by rewriting this.
     overall_confidence = float(extracted.get("overall_confidence") or 0.8)
 
     # Store quantity result
@@ -398,6 +496,8 @@ async def analyse_drawing(
 
     job.status = "pending_review"
     job.total_weight_kg = total_steel_kg
+    job.selling_price = costing["selling_price"]
+    job.total_cost = costing["grand_total"]
 
     db.add(AuditLog(
         job_id=job_id,
@@ -409,6 +509,7 @@ async def analyse_drawing(
             "provider": ai.provider_name,
             "paint_litres": pm_litres,
             "bolts_found": bl.get("found", False),
+            "weight_flags": weight_flags,
         },
     ))
     await db.commit()
@@ -426,7 +527,7 @@ async def analyse_drawing(
         "costing": costing,
         "overall_confidence": overall_confidence,
         "summary": extracted.get("summary") or f"Extracted {len(bom_items_out)} items. Steel: {round(total_steel_kg, 1)} kg.",
-        "flags": [],
+        "flags": weight_flags,
         "extracted_detail": {
             "structural_steel": extracted.get("structural_steel"),
             "handrails": extracted.get("handrails"),
@@ -441,11 +542,142 @@ async def analyse_drawing(
 
 
 # ---------------------------------------------------------------------------
+# POST /manual-entry
+# ---------------------------------------------------------------------------
+class ManualBomEntry(BaseModel):
+    structural_steel_kg: float = Field(..., gt=0, description="Total structural steel weight in kg")
+    handrail_kg: Optional[float] = Field(None, ge=0)
+    grating_kg: Optional[float] = Field(None, ge=0)
+    bolts_qty: Optional[float] = Field(None, ge=0, description="Number of M20x90 bolts")
+    paint_litres: Optional[float] = Field(None, ge=0)
+    markup_pct: float = Field(34.0, ge=0, le=80)
+    project_name: Optional[str] = None
+    client_name: Optional[str] = None
+    drawing_number: Optional[str] = None
+
+
+@router.post("/manual-entry")
+async def manual_entry(body: ManualBomEntry, db: AsyncSession = Depends(db_session)):
+    """
+    Fallback path for when LlamaParse/LLM extraction fails or returns no usable data.
+    User supplies the 5 BOM quantities directly; costing/Excel pipeline proceeds identically.
+    """
+    job = Job(
+        job_number=_gen_job_number(),
+        client_name=body.client_name,
+        project_name=body.project_name,
+        project_ref=body.drawing_number or "MANUAL",
+        status="pending_review",
+    )
+    db.add(job)
+    await db.flush()
+    job_id = str(job.id)
+
+    def _add_bom(description: str, category: str, weight_kg: float | None, qty: float | None) -> None:
+        db.add(BomItem(
+            job_id=job_id,
+            description=description,
+            category=category,
+            qty=qty,
+            total_weight_kg=weight_kg,
+            confidence=1.0,
+            review_required=False,
+        ))
+
+    _add_bom("Structural Steel Material — manual entry", "structural_steel", body.structural_steel_kg, None)
+    if body.handrail_kg:
+        _add_bom("Handrails — manual entry", "handrail", body.handrail_kg, None)
+    if body.grating_kg:
+        _add_bom("Grating — manual entry", "grating", body.grating_kg, None)
+    if body.bolts_qty:
+        _add_bom("M20×90 Long Bolts HEX HD & Nut to BS 4190 Gr.8.8", "bolt", None, body.bolts_qty)
+    if body.paint_litres:
+        _add_bom("Paint Material — manual entry", "paint", None, body.paint_litres)
+
+    await db.flush()
+
+    bom_result = await db.execute(select(BomItem).where(BomItem.job_id == job_id))
+    bom_items_out = [_bom_item_to_dict(i) for i in bom_result.scalars().all()]
+
+    db.add(QuantityResult(
+        job_id=job_id,
+        category="structural_steel",
+        quantity_unit="kg",
+        quantity_value=body.structural_steel_kg,
+        weight_kg=body.structural_steel_kg,
+        source="manual_entry",
+        calculation_method="manual_entry",
+        confidence=1.0,
+        is_approved=False,
+    ))
+
+    costing = _compute_costing(body.structural_steel_kg, body.markup_pct / 100.0)
+    if body.handrail_kg:
+        costing["handrail_kg"] = round(body.handrail_kg, 2)
+    if body.grating_kg:
+        costing["grating_kg"] = round(body.grating_kg, 2)
+    if body.bolts_qty:
+        costing["bolts"] = int(body.bolts_qty)
+    if body.paint_litres:
+        costing["paint_litres"] = round(body.paint_litres, 3)
+
+    db.add(CostingSheet(
+        job_id=job_id,
+        line_items_json=costing,
+        totals_json=costing,
+        rates_snapshot_json={"markup_pct": body.markup_pct},
+        audit_trail_json=[{
+            "event": "manual_entry_created",
+            "created_at": datetime.utcnow().isoformat(),
+        }],
+    ))
+
+    job.status = "pending_review"
+    job.total_weight_kg = body.structural_steel_kg
+    job.total_cost = costing["grand_total"]
+    job.selling_price = costing["selling_price"]
+
+    db.add(AuditLog(
+        job_id=job_id,
+        action="manual_entry_created",
+        details_json={
+            "bom_items": len(bom_items_out),
+            "total_steel_kg": body.structural_steel_kg,
+        },
+    ))
+    await db.commit()
+
+    return {
+        "job_id": job_id,
+        "job_number": job.job_number,
+        "project_information": {
+            "project_name": body.project_name,
+            "client_name": body.client_name,
+            "drawing_number": body.drawing_number,
+        },
+        "bom_items": bom_items_out,
+        "total_steel_kg": body.structural_steel_kg,
+        "costing": costing,
+        "overall_confidence": 1.0,
+        "summary": f"Manual entry. Steel: {body.structural_steel_kg} kg.",
+        "flags": [],
+        "extracted_detail": {},
+        "status": "pending_review",
+        "can_generate_excel": True,
+        "markup_pct": body.markup_pct,
+    }
+
+
+# ---------------------------------------------------------------------------
 # GET /{job_id}/review
 # ---------------------------------------------------------------------------
 @router.get("/{job_id}/review")
-async def get_review(job_id: str, db: AsyncSession = Depends(db_session)):
-    """Return the full review payload for a job."""
+async def get_review(job_id: str, markup_pct: float = 34.0, db: AsyncSession = Depends(db_session)):
+    """
+    Return the full review payload for a job — same shape as /analyse and
+    /manual-entry so the frontend can reopen a previously-created job in the
+    exact same review UI (edit BOM items, adjust markup, regenerate Excel).
+    """
     job_result = await db.execute(select(Job).where(Job.id == job_id))
     job = job_result.scalar_one_or_none()
     if not job:
@@ -468,15 +700,32 @@ async def get_review(job_id: str, db: AsyncSession = Depends(db_session)):
         float(q["weight_kg"] or 0) for q in quantities
         if q.get("category") == "structural_steel"
     )
+    total_steel_kg = round(total_steel_kg, 2)
+
+    confidences = [float(q["confidence"]) for q in quantities if q.get("confidence") is not None]
+    overall_confidence = round(sum(confidences) / len(confidences), 2) if confidences else None
+
+    costing = _compute_costing(total_steel_kg, markup_pct / 100.0)
 
     return {
         "job_id": job_id,
         "job_number": job.job_number,
-        "status": job.status,
-        "can_generate_excel": True,
+        "project_information": {
+            "project_name": job.project_name,
+            "client_name": job.client_name,
+            "drawing_number": job.project_ref,
+        },
         "bom_items": bom_items,
         "quantity_results": quantities,
-        "total_steel_kg": round(total_steel_kg, 2),
+        "total_steel_kg": total_steel_kg,
+        "costing": costing,
+        "customer_info": job.customer_info_json,
+        "overall_confidence": overall_confidence,
+        "summary": f"Reopened job {job.job_number} for review.",
+        "flags": [],
+        "status": job.status,
+        "can_generate_excel": True,
+        "markup_pct": markup_pct,
     }
 
 
@@ -545,7 +794,11 @@ async def recalculate(
         .values(weight_kg=total_steel_kg, quantity_value=total_steel_kg)
     )
     await db.execute(
-        update(Job).where(Job.id == job_id).values(total_weight_kg=total_steel_kg)
+        update(Job).where(Job.id == job_id).values(
+            total_weight_kg=total_steel_kg,
+            total_cost=costing["grand_total"],
+            selling_price=costing["selling_price"],
+        )
     )
     db.add(AuditLog(
         job_id=job_id,
@@ -601,6 +854,13 @@ async def generate_excel_endpoint(
     job = job_result.scalar_one_or_none()
     if not job:
         raise HTTPException(status_code=404, detail=f"Job {job_id} not found.")
+
+    if not str(body.customer.get("customerName") or "").strip():
+        raise HTTPException(status_code=422, detail="Customer information (at least Customer Name) is required before generating the costing sheet.")
+
+    # Persist the customer/quotation header for this job — reopening it later (Job History →
+    # Drawing Costing review) pre-fills these instead of asking again from scratch.
+    job.customer_info_json = body.customer
 
     qty_result = await db.execute(select(QuantityResult).where(QuantityResult.job_id == job_id))
     quantities = {q.category: q for q in qty_result.scalars().all()}
