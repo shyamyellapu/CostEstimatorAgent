@@ -534,3 +534,123 @@ class OpenAIProvider(AIProvider):
         )
         return response.choices[0].message.content or ""
 
+    async def chat_with_attachments(
+        self,
+        prompt: str,
+        images: Optional[List[Dict[str, Any]]] = None,
+        pdfs: Optional[List[Dict[str, Any]]] = None,
+        documents: Optional[List[Dict[str, Any]]] = None,
+        previous_response_id: Optional[str] = None,
+    ) -> ChatResponse:
+        """Raw LLM inference test — plain prompt, no costing schema/system prompt.
+        Files are sent as-is — no text extraction, no page rasterizing.
+
+        Chat Completions has no native PDF/document input, so real OpenAI uses the
+        Responses API per OpenAI's file-inputs guide: PDFs and other documents
+        (docx, pptx, xlsx, csv, txt, ...) are uploaded via the Files API
+        (`purpose="user_data"`) and referenced by file_id as `input_file` blocks;
+        images go in inline as base64 `input_image` blocks. `previous_response_id`
+        chains a follow-up onto a prior response natively, without resending
+        earlier files/messages. Gemini/OpenRouter subclass this provider but proxy
+        to endpoints that don't implement the Files/Responses APIs, so they fall
+        back to the old inline Chat Completions path below (images/PDFs only).
+        """
+        if self.provider_name != "openai":
+            return await self._chat_completions_with_attachments(prompt, images, pdfs)
+
+        input_content: List[Any] = [{"type": "input_text", "text": prompt}]
+        model = self.model
+
+        for pdf in (pdfs or []):
+            filename = pdf.get("filename", "document.pdf")
+            uploaded = await self.client.files.create(
+                file=(filename, pdf["bytes"], "application/pdf"),
+                purpose="user_data",
+            )
+            input_content.append({"type": "input_file", "file_id": uploaded.id, "detail": "auto"})
+            model = self.model_vision
+
+        for doc in (documents or []):
+            filename = doc.get("filename", "document")
+            uploaded = await self.client.files.create(
+                file=(filename, doc["bytes"], doc.get("mime") or "application/octet-stream"),
+                purpose="user_data",
+            )
+            input_content.append({"type": "input_file", "file_id": uploaded.id})
+
+        for img in (images or []):
+            b64_image = base64.standard_b64encode(img["bytes"]).decode("utf-8")
+            input_content.append({
+                "type": "input_image",
+                "image_url": f"data:{img['mime']};base64,{b64_image}",
+                "detail": "auto",
+            })
+            model = self.model_vision
+
+        request_kwargs: Dict[str, Any] = {
+            "model": model,
+            "input": [{"role": "user", "content": input_content}],
+        }
+        if previous_response_id:
+            request_kwargs["previous_response_id"] = previous_response_id
+
+        response = await self.client.responses.create(**request_kwargs)
+        usage = getattr(response, "usage", None)
+        return ChatResponse(
+            content=response.output_text,
+            model_used=model,
+            usage={
+                "input_tokens": getattr(usage, "input_tokens", None),
+                "output_tokens": getattr(usage, "output_tokens", None),
+            } if usage else {},
+            response_id=response.id,
+        )
+
+    async def _chat_completions_with_attachments(
+        self,
+        prompt: str,
+        images: Optional[List[Dict[str, Any]]] = None,
+        pdfs: Optional[List[Dict[str, Any]]] = None,
+    ) -> ChatResponse:
+        """Fallback for OpenAI-compatible endpoints (Gemini, OpenRouter) that don't
+        implement the Files/Responses APIs — inline attachments via Chat Completions.
+        Non-PDF documents and multi-turn `previous_response_id` chaining aren't
+        supported on this path."""
+        user_content: List[Any] = [{"type": "text", "text": prompt}]
+        model = self.model
+
+        for pdf in (pdfs or []):
+            b64_pdf = base64.standard_b64encode(pdf["bytes"]).decode("utf-8")
+            user_content.append({
+                "type": "file",
+                "file": {
+                    "filename": pdf.get("filename", "document.pdf"),
+                    "file_data": f"data:application/pdf;base64,{b64_pdf}",
+                }
+            })
+            model = self.model_vision
+
+        for img in (images or []):
+            b64_image = base64.standard_b64encode(img["bytes"]).decode("utf-8")
+            user_content.append({
+                "type": "image_url",
+                "image_url": {"url": f"data:{img['mime']};base64,{b64_image}"}
+            })
+            model = self.model_vision
+
+        response = await self._chat_completions_create(
+            model=model,
+            messages=[{"role": "user", "content": user_content}],
+            max_completion_tokens=2048,
+        )
+        usage = response.usage
+        return ChatResponse(
+            content=response.choices[0].message.content or "",
+            model_used=model,
+            usage={
+                "prompt_tokens": getattr(usage, "prompt_tokens", None),
+                "completion_tokens": getattr(usage, "completion_tokens", None),
+                "total_tokens": getattr(usage, "total_tokens", None),
+            } if usage else {}
+        )
+

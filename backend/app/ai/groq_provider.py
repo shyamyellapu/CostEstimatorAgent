@@ -406,3 +406,56 @@ class GroqProvider(AIProvider):
             max_tokens=max_tokens,
         )
         return raw.choices[0].message.content or ""
+
+    async def chat_with_attachments(
+        self,
+        prompt: str,
+        images: Optional[List[Dict[str, Any]]] = None,
+        pdfs: Optional[List[Dict[str, Any]]] = None,
+        documents: Optional[List[Dict[str, Any]]] = None,
+        previous_response_id: Optional[str] = None,
+    ) -> ChatResponse:
+        """Raw LLM inference test — plain prompt, no costing schema/system prompt.
+        PDFs and images are sent as-is (raw bytes) — no text extraction, no page rasterizing.
+        Groq has no equivalent for arbitrary office documents or `previous_response_id`
+        chaining (that's OpenAI Responses-API-specific), so both are ignored here."""
+        if documents:
+            logger.warning("Groq chat_with_attachments: %d non-PDF document(s) ignored (unsupported)", len(documents))
+
+        user_content: List[Any] = [{"type": "text", "text": prompt}]
+        model = self.model_large
+
+        for pdf in (pdfs or []):
+            b64_pdf = base64.standard_b64encode(pdf["bytes"]).decode("utf-8")
+            user_content.append({
+                "type": "file",
+                "file": {
+                    "filename": pdf.get("filename", "document.pdf"),
+                    "file_data": f"data:application/pdf;base64,{b64_pdf}",
+                }
+            })
+            model = self.model_vision
+
+        for img in (images or []):
+            b64_image = base64.standard_b64encode(img["bytes"]).decode("utf-8")
+            user_content.append({
+                "type": "image_url",
+                "image_url": {"url": f"data:{img['mime']};base64,{b64_image}"}
+            })
+            model = self.model_vision
+
+        try:
+            raw = await self.raw_client.chat.completions.create(
+                model=model,
+                messages=[{"role": "user", "content": user_content}],
+                temperature=0.3,
+                max_tokens=2048,
+            )
+            return ChatResponse(
+                content=raw.choices[0].message.content or "",
+                model_used=model,
+                usage=dict(raw.usage) if raw.usage else {}
+            )
+        except Exception as e:
+            logger.error(f"Groq chat_with_attachments error: {e}")
+            raise

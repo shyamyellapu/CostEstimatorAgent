@@ -4,14 +4,32 @@ from __future__ import annotations
 
 import io
 import logging
+import re
+from copy import copy
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 
 logger = logging.getLogger(__name__)
+
+# Matches a single cell reference token (e.g. "G23", "$K$26") inside a formula
+# string, so rows shifted by an insert_rows() call can be re-based — openpyxl
+# moves cell contents on insert but does not rewrite the formulas themselves.
+_CELL_REF_RE = re.compile(r"(\$?)([A-Za-z]{1,3})(\$?)(\d+)")
+
+
+def _shift_formula_refs(formula: str, insert_at: int, amount: int) -> str:
+    def repl(match: "re.Match[str]") -> str:
+        dollar_col, col, dollar_row, row = match.groups()
+        row_num = int(row)
+        if row_num >= insert_at:
+            row_num += amount
+        return f"{dollar_col}{col}{dollar_row}{row_num}"
+
+    return _CELL_REF_RE.sub(repl, formula)
 
 
 class ExcelGenerator:
@@ -40,6 +58,127 @@ class ExcelGenerator:
         wb.save(buf)
         buf.seek(0)
         return buf.read()
+
+    # ──────────────────────────────────────────────────────────────
+    # Chat-page LLM extraction → costing sheet
+    # ──────────────────────────────────────────────────────────────
+    # Rows already present in the template's "Material Cost" block.
+    _STRUCTURAL_STEEL_ROW = 23
+    _LAST_KNOWN_MATERIAL_ROW = 26
+    _KNOWN_MATERIAL_ROWS = [
+        (_STRUCTURAL_STEEL_ROW, ("structural steel",)),
+        (24, ("handrail",)),
+        (25, ("grating",)),
+        (_LAST_KNOWN_MATERIAL_ROW, ("paint",)),
+    ]
+
+    def generate_from_extraction_items(
+        self,
+        items: List[Dict[str, Any]],
+        customer: Optional[Dict[str, Any]] = None,
+    ) -> bytes:
+        """Fill the sample costing sheet from a Chat-page LLM extraction.
+
+        `"Structural Steel Material"` always lands in G23 and keeps the sheet's
+        standard rate — pricing is only taken from `item["rate"]` for every other
+        item. Items that match a row already in the template's material block
+        (handrails, grating, paint) fill that row's quantity (and rate, if given).
+        Anything else is inserted as a new row right after the material block,
+        with its name/quantity/unit/rate/remarks in the matching columns — any
+        formula referencing rows below the insertion point is re-based since
+        openpyxl does not do this automatically.
+        """
+        wb = self._load_template_workbook()
+        ws = wb.worksheets[0]
+
+        if customer:
+            self._fill_customer_header(ws, customer)
+
+        extra_items: List[Dict[str, Any]] = []
+        for item in items or []:
+            label = str(item.get("description") or item.get("name") or "").strip()
+            quantity = item.get("quantity")
+            if not label or quantity is None:
+                continue
+            qty = self._safe_float(quantity, default=None)
+            if qty is None:
+                continue
+
+            low = label.lower()
+            matched_row = next(
+                (row for row, keywords in self._KNOWN_MATERIAL_ROWS if any(k in low for k in keywords)),
+                None,
+            )
+            if matched_row is not None:
+                ws[f"G{matched_row}"] = qty
+                if matched_row != self._STRUCTURAL_STEEL_ROW:
+                    rate = self._safe_float(item.get("rate"), default=None)
+                    if rate is not None:
+                        ws[f"J{matched_row}"] = rate
+            else:
+                extra_items.append({**item, "_qty": qty, "_label": label})
+
+        if extra_items:
+            insert_at = self._LAST_KNOWN_MATERIAL_ROW + 1
+            amount = len(extra_items)
+            ws.insert_rows(insert_at, amount=amount)
+            self._rebase_formulas(ws, insert_at, amount)
+
+            for offset, item in enumerate(extra_items):
+                row = insert_at + offset
+                self._copy_material_row_style(ws, self._LAST_KNOWN_MATERIAL_ROW, row)
+                rate = self._safe_float(item.get("rate"), default=0.0)
+                ws[f"A{row}"] = f"5.{5 + offset}"
+                ws[f"B{row}"] = item["_label"]
+                ws[f"G{row}"] = item["_qty"]
+                ws[f"H{row}"] = item.get("unit") or ""
+                ws[f"J{row}"] = rate
+                ws[f"K{row}"] = f"=G{row}*J{row}"
+                ws[f"L{row}"] = item.get("remarks") or ""
+
+        buf = io.BytesIO()
+        wb.save(buf)
+        buf.seek(0)
+        return buf.read()
+
+    def _fill_customer_header(self, ws, customer: Dict[str, Any]) -> None:
+        """Header cells as used by the live Drawing Costing export
+        (app/services/drawing_costing.py::generate_excel) for this same template."""
+        ref_no = str(customer.get("refNo") or "").strip()
+        if ref_no:
+            ws["A3"] = f"REF NO: {ref_no}"
+        ws["C4"] = customer.get("customerName") or ""
+        ws["G4"] = datetime.now().date()
+        ws["O4"] = customer.get("enquiryNo") or ""
+        ws["G5"] = customer.get("attention") or ""
+        ws["O5"] = customer.get("jobNo") or ""
+        ws["G6"] = customer.get("contact") or ""
+
+    def _rebase_formulas(self, ws, insert_at: int, amount: int) -> None:
+        """Re-base every formula in the sheet after an insert_rows() call.
+
+        openpyxl relocates cell values/styles on insert but leaves formula text
+        untouched, so a formula like `=I30*J30` sitting in a row that just moved
+        to row 32 would keep pointing at the old row 30 instead of its new
+        neighbours. Any reference to a row at or after `insert_at` (in the
+        pre-insert numbering) needs to shift by `amount`; refs to earlier rows
+        are already correct since those rows didn't move.
+        """
+        for row in ws.iter_rows():
+            for cell in row:
+                if isinstance(cell.value, str) and cell.value.startswith("="):
+                    cell.value = _shift_formula_refs(cell.value, insert_at, amount)
+
+    def _copy_material_row_style(self, ws, src_row: int, dst_row: int) -> None:
+        for col in range(1, 13):  # A..L
+            src = ws.cell(src_row, col)
+            dst = ws.cell(dst_row, col)
+            dst.font = copy(src.font)
+            dst.border = copy(src.border)
+            dst.fill = copy(src.fill)
+            dst.alignment = copy(src.alignment)
+            dst.number_format = src.number_format
+        ws.merge_cells(start_row=dst_row, start_column=2, end_row=dst_row, end_column=6)  # B:F
 
     def _load_template_workbook(self) -> Workbook:
         if not self.template_path.exists():
@@ -344,7 +483,7 @@ class ExcelGenerator:
             row += 1
 
     @staticmethod
-    def _safe_float(value: Any, default: float = 0.0) -> float:
+    def _safe_float(value: Any, default: Optional[float] = 0.0) -> Optional[float]:
         try:
             if value is None:
                 return default

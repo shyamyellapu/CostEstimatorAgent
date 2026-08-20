@@ -16,6 +16,7 @@ import QuoteSummary from './pages/QuoteSummary'
 import CoverLetterGenerator from './pages/CoverLetterGenerator'
 import JobHistory from './pages/JobHistory'
 import Settings from './pages/Settings'
+import Chat from './pages/Chat'
 import RFQInbox from './pages/RFQInbox'
 import RFQDetail from './pages/RFQDetail'
 import GmailCallback from './pages/GmailCallback'
@@ -91,6 +92,9 @@ export default function App() {
 
             {/* Self-service — every authenticated user manages their own sessions */}
             <Route path="/sessions" element={<ActiveSessionsPage />} />
+
+            {/* LLM inference playground — available to every authenticated user */}
+            <Route path="/llm-extraction" element={<Chat />} />
 
             {/* Admin-only */}
             <Route path="/admin/users" element={

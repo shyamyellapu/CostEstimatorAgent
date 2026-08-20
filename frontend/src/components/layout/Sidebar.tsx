@@ -2,7 +2,7 @@ import { NavLink } from 'react-router-dom'
 import {
   LayoutDashboard, PlusCircle, Scale, ClipboardList,
   FileSpreadsheet, BarChart2, FileText, History, Settings, Zap, X, Calculator, Inbox,
-  Users, ShieldCheck, ShieldAlert, FileClock,
+  Users, ShieldCheck, ShieldAlert, FileClock, MessageSquare,
 } from 'lucide-react'
 import { usePermissions } from '../../hooks/usePermissions'
 import { PERMISSIONS, ROLES } from '../../auth/auth.constants'
@@ -39,6 +39,7 @@ const navSections: NavSection[] = [
       { to: '/drawing-costing', icon: Calculator, label: 'Drawing Costing', permissions: [PERMISSIONS.DRAWINGS_PROCESS] },
       { to: '/weight-calculator', icon: Scale, label: 'Weight Calculator', roles: [ROLES.ESTIMATOR, ROLES.MANAGER, ROLES.ADMIN] },
       { to: '/boq-parser', icon: ClipboardList, label: 'BOQ Parser', permissions: [PERMISSIONS.BOQ_PARSE] },
+      { to: '/llm-extraction', icon: MessageSquare, label: 'LLM Extraction' },
     ],
   },
   {

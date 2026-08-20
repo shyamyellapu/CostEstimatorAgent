@@ -985,6 +985,24 @@ a:hover { color: var(--primary-700); }
 .tab:hover { color: var(--text-primary); }
 .tab.active { color: var(--primary-600); border-bottom-color: var(--primary-600); }
 
+/* ─── Inline-editable table cell input ──────────────────────────── */
+/* Border only appears while focused — driven by CSS, not a manual
+   onFocus/onBlur style mutation, so it can never get stuck highlighted. */
+.cell-input {
+  width: 100%;
+  font-size: 0.8rem;
+  padding: 0.25rem 0.4rem;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+}
+.cell-input:focus {
+  border-color: var(--primary-400);
+  outline: none;
+}
+
 /* Bottom padding for chat footer */
 .page-body { padding-bottom: 5rem; }
 

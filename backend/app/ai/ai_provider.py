@@ -183,6 +183,7 @@ class ChatResponse(BaseModel):
     content: str
     model_used: str
     usage: Dict[str, Any] = {}
+    response_id: Optional[str] = None
 
 
 # ─── Abstract Base ────────────────────────────────────────────────────────────
@@ -273,6 +274,39 @@ class AIProvider(ABC):
         """
         response = await self.chat([{"role": "user", "content": prompt}])
         return response.content
+
+    async def chat_with_attachments(
+        self,
+        prompt: str,
+        images: Optional[List[Dict[str, Any]]] = None,
+        pdfs: Optional[List[Dict[str, Any]]] = None,
+        documents: Optional[List[Dict[str, Any]]] = None,
+        previous_response_id: Optional[str] = None,
+    ) -> "ChatResponse":
+        """
+        Raw LLM inference test: a free-form prompt plus optional attached files,
+        sent to the model with no costing schema or system prompt in the way.
+
+        `images` is a list of {"bytes": bytes, "mime": str} dicts.
+        `pdfs` is a list of {"bytes": bytes, "filename": str} dicts — raw PDF bytes,
+        no text extraction or page-to-image conversion.
+        `documents` is a list of {"bytes": bytes, "filename": str, "mime": str} dicts
+        for non-PDF office/text documents (docx, pptx, xlsx, csv, txt, ...).
+        `previous_response_id` chains a follow-up onto a prior native provider
+        response (only meaningful where the provider supports it, e.g. OpenAI's
+        Responses API) — providers that don't support it just ignore it.
+
+        Providers with a native multimodal chat path should override this; the
+        default here just ignores any attachments and answers the prompt alone.
+        """
+        if images or pdfs or documents:
+            logger.warning(
+                "%s.chat_with_attachments: no multimodal override — %d image(s), %d pdf(s), "
+                "%d document(s) ignored",
+                self.provider_name, len(images or []), len(pdfs or []), len(documents or [])
+            )
+        text = await self.complete(prompt)
+        return ChatResponse(content=text, model_used=self.provider_name, usage={})
 
     async def extract_from_multiple_files(
         self,

@@ -37,9 +37,9 @@ class Settings(BaseSettings):
     ai_provider: str = "openai"
     # OpenAI
     openai_api_key: str = ""
-    openai_model: str = "gpt-4o"
-    openai_model_fast: str = "gpt-4o-mini"
-    openai_model_vision: str = "gpt-4o"
+    openai_model: str = "gpt-5.5"
+    openai_model_fast: str = "gpt-5.5"
+    openai_model_vision: str = "gpt-5.5"
     # Groq
     groq_api_key: str = ""
     groq_model_large: str = "llama-3.3-70b-versatile"

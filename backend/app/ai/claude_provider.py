@@ -574,3 +574,49 @@ class ClaudeProvider(AIProvider):
             messages=[{"role": "user", "content": prompt}],
         )
         return response.content[0].text
+
+    async def chat_with_attachments(
+        self,
+        prompt: str,
+        images: Optional[List[Dict[str, Any]]] = None,
+        pdfs: Optional[List[Dict[str, Any]]] = None,
+        documents: Optional[List[Dict[str, Any]]] = None,
+        previous_response_id: Optional[str] = None,
+    ) -> ChatResponse:
+        """Raw LLM inference test — plain prompt, no costing schema/system prompt.
+        PDFs and images are sent as-is (raw bytes) — no text extraction, no page rasterizing.
+        Claude has no equivalent for arbitrary office documents or `previous_response_id`
+        chaining (that's OpenAI Responses-API-specific), so both are ignored here."""
+        if documents:
+            logger.warning("Claude chat_with_attachments: %d non-PDF document(s) ignored (unsupported)", len(documents))
+
+        user_content: List[Any] = [{"type": "text", "text": prompt}]
+
+        for pdf in (pdfs or []):
+            b64_pdf = base64.standard_b64encode(pdf["bytes"]).decode("utf-8")
+            user_content.append({
+                "type": "document",
+                "source": {"type": "base64", "media_type": "application/pdf", "data": b64_pdf}
+            })
+
+        for img in (images or []):
+            b64_image = base64.standard_b64encode(img["bytes"]).decode("utf-8")
+            user_content.append({
+                "type": "image",
+                "source": {"type": "base64", "media_type": img["mime"], "data": b64_image}
+            })
+
+        try:
+            response = await self._messages_create(
+                max_tokens=2048,
+                system="",
+                messages=[{"role": "user", "content": user_content}],
+            )
+            usage_dict = {
+                "input_tokens": response.usage.input_tokens,
+                "output_tokens": response.usage.output_tokens
+            }
+            return ChatResponse(content=response.content[0].text, model_used=self.model, usage=usage_dict)
+        except Exception as e:
+            logger.error(f"Claude chat_with_attachments error: {e}")
+            raise
