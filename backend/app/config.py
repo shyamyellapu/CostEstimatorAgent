@@ -114,6 +114,11 @@ class Settings(BaseSettings):
     log_dir: str = "logs"
     log_max_bytes: int = 10 * 1024 * 1024  # 10 MB
     log_backup_count: int = 5
+    # Mirror every log record (including DEBUG and the normally-silenced noisy
+    # libraries) to stdout — set LOG_EVERYTHING_TO_CONSOLE=true when the log
+    # files aren't reachable (e.g. Azure App Service with a read-only wwwroot)
+    # so `az webapp log tail` / Log stream still shows everything.
+    log_everything_to_console: bool = False
     environment: str = "development"  # development | production
 
     # ── Authentication ──────────────────────────────────────────────────────

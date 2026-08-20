@@ -66,9 +66,12 @@ def setup_logging() -> None:
     handlers: list[logging.Handler] = []
 
     # --- 1. Stdout (console) ---
+    # LOG_EVERYTHING_TO_CONSOLE=true drops the console handler down to DEBUG so
+    # every record — including the ones that would otherwise only land in
+    # app_debug.log — is also visible on stdout (e.g. via Azure Log stream).
     console_handler = logging.StreamHandler(sys.stdout)
     console_handler.setFormatter(_CONSOLE_FMT)
-    console_handler.setLevel(level)
+    console_handler.setLevel(logging.DEBUG if settings.log_everything_to_console else level)
     handlers.append(console_handler)
 
     # --- 2. app.log — INFO and above ---
@@ -113,38 +116,43 @@ def setup_logging() -> None:
         root.addHandler(h)
     # Use DEBUG as root level so debug handler can receive records when active;
     # individual handlers enforce their own min-level.
-    root.setLevel(logging.DEBUG if settings.debug else level)
+    root.setLevel(logging.DEBUG if (settings.debug or settings.log_everything_to_console) else level)
 
     # --- Suppress noisy third-party / infrastructure loggers ---
-    _silence = {
-        # SQLAlchemy engine: full SQL statements, BEGIN, ROLLBACK every few seconds
-        "sqlalchemy.engine":                logging.WARNING,
-        "sqlalchemy.engine.Engine":         logging.WARNING,
-        "sqlalchemy.pool":                  logging.WARNING,
-        "sqlalchemy.dialects":              logging.WARNING,
-        # Uvicorn internal (access log handled separately, errors still show)
-        "uvicorn.access":                   logging.WARNING,
-        "uvicorn.error":                    logging.WARNING,
-        # HTTP client libraries
-        "httpx":                            logging.WARNING,
-        "httpcore":                         logging.WARNING,
-        "urllib3":                          logging.WARNING,
-        "urllib3.connectionpool":           logging.WARNING,
-        # Misc noisy libraries
-        "googleapiclient.discovery_cache":  logging.WARNING,
-        "multipart":                        logging.WARNING,
-        "watchfiles":                       logging.WARNING,
-        "asyncio":                          logging.WARNING,
-        "PIL":                              logging.WARNING,
-    }
-    for name, lvl in _silence.items():
-        logging.getLogger(name).setLevel(lvl)
+    # Skipped entirely when LOG_EVERYTHING_TO_CONSOLE=true — that flag means
+    # "give me everything on stdout", so these stay at their own natural level
+    # instead of being force-quieted to WARNING.
+    if not settings.log_everything_to_console:
+        _silence = {
+            # SQLAlchemy engine: full SQL statements, BEGIN, ROLLBACK every few seconds
+            "sqlalchemy.engine":                logging.WARNING,
+            "sqlalchemy.engine.Engine":         logging.WARNING,
+            "sqlalchemy.pool":                  logging.WARNING,
+            "sqlalchemy.dialects":              logging.WARNING,
+            # Uvicorn internal (access log handled separately, errors still show)
+            "uvicorn.access":                   logging.WARNING,
+            "uvicorn.error":                    logging.WARNING,
+            # HTTP client libraries
+            "httpx":                            logging.WARNING,
+            "httpcore":                         logging.WARNING,
+            "urllib3":                          logging.WARNING,
+            "urllib3.connectionpool":           logging.WARNING,
+            # Misc noisy libraries
+            "googleapiclient.discovery_cache":  logging.WARNING,
+            "multipart":                        logging.WARNING,
+            "watchfiles":                       logging.WARNING,
+            "asyncio":                          logging.WARNING,
+            "PIL":                              logging.WARNING,
+        }
+        for name, lvl in _silence.items():
+            logging.getLogger(name).setLevel(lvl)
 
     # Announce that logging is ready
     _init_logger = logging.getLogger("app.logging_config")
     _init_logger.info(
-        "Logging initialised level=%s log_dir=%s debug_file=%s",
+        "Logging initialised level=%s log_dir=%s debug_file=%s console_all=%s",
         level_name,
         log_dir.resolve(),
         settings.debug,
+        settings.log_everything_to_console,
     )
