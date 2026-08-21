@@ -27,19 +27,28 @@ class CoverLetterService:
         self._master_template_text_cache: Optional[str] = None
         self._header_footer_assets_cache: Optional[Dict[str, Any]] = None
 
-    def _master_template_path(self) -> Path:
-        project_root = Path(__file__).resolve().parents[3]
-        configured = Path(settings.cover_letter_master_template_path)
+    def _resolve_reference_path(self, configured_str: str) -> Path:
+        """Try multiple deploy layouts (repo root, backend/, wwwroot's parent) since Azure's folder depth differs from local."""
+        configured = Path(configured_str)
         if configured.is_absolute():
             return configured
-        return project_root / configured
+
+        here = Path(__file__).resolve()
+        candidates = [
+            here.parents[3] / configured,
+            here.parents[2] / configured,
+            here.parents[2].parent / configured,
+        ]
+        for candidate in candidates:
+            if candidate.exists():
+                return candidate
+        return candidates[0]
+
+    def _master_template_path(self) -> Path:
+        return self._resolve_reference_path(settings.cover_letter_master_template_path)
 
     def _header_footer_docx_path(self) -> Path:
-        project_root = Path(__file__).resolve().parents[3]
-        configured = Path(settings.cover_letter_header_footer_docx_path)
-        if configured.is_absolute():
-            return configured
-        return project_root / configured
+        return self._resolve_reference_path(settings.cover_letter_header_footer_docx_path)
 
     def _load_header_footer_assets(self) -> Optional[Dict[str, Any]]:
         """Extract header/footer images from the branded DOCX template."""
@@ -427,8 +436,7 @@ class CoverLetterService:
         story.append(Paragraph("For C&amp;J Gulf Equipment Manufacturing LLC.", body_style))
 
         # --- Signature images + names ---
-        project_root = Path(__file__).resolve().parents[3]
-        sig_dir = project_root / "ReferenceFiles"
+        sig_dir = self._resolve_reference_path("ReferenceFiles")
         sig_h = 38  # pt — tuned via signature_editor
         arjun_h = 200  # Increased height for Arjun Gopakumar's signature
 
@@ -436,12 +444,10 @@ class CoverLetterService:
             h = height if height is not None else sig_h
             p = sig_dir / filename
             if not p.exists():
+                logger.warning("Signature image not found at %s. Using blank spacer.", p)
                 return Spacer(1, h)
             reader = ImageReader(str(p))
             iw, ih = reader.getSize()
-            print(f"Processing image: {filename}")
-            print(f"Original dimensions: width={iw}, height={ih}")
-            print(f"Calculated dimensions: width={h * (iw / ih)}, height={h}")
             img = RLImage(str(p), width=h * (iw / ih), height=h)
             img.hAlign = 'LEFT'
             return img
