@@ -8,14 +8,18 @@ The AI layer is ONLY responsible for:
   - Drafting cover letter content
 It must NEVER be used for costing calculations.
 """
+import logging
 from abc import ABC, abstractmethod
 from typing import Any, Dict, List, Optional
 from pydantic import BaseModel
 
+logger = logging.getLogger(__name__)
+_IMAGE_EXTENSIONS = frozenset({".png", ".jpg", ".jpeg", ".gif", ".bmp", ".tiff", ".webp"})
+
 
 class ExtractionFlag(BaseModel):
     field: str = "general"
-    reason: str
+    reason: str = "No reason provided"
     confidence: float = 0.5
 
 
@@ -50,6 +54,10 @@ class DrawingMetadata(BaseModel):
     work_order_number: Optional[str] = ""
     scale: Optional[str] = ""
     date_issued: Optional[str] = ""
+    total_sheets_in_drawing: Optional[int] = None
+    sheets_provided: Optional[int] = None
+    sheets_processed: Optional[int] = None
+    material_standard: Optional[str] = ""
     referenced_drawings: List[str] = []
     general_notes: List[str] = []
 
@@ -106,6 +114,18 @@ class CostEstimationInputs(BaseModel):
     paint_litres_estimated: float = 0
 
 
+class CostingSheetInputs(BaseModel):
+    """Aggregate inputs from AI extraction — feed directly into the costing engine."""
+    structural_steel_total_kg: float = 0.0
+    bolt_quantity_nos: int = 0
+    paint_litres: float = 0.0
+    welding_hours: float = 0.0
+    fabrication_hours: float = 0.0
+    galvanizing_weight_kg: float = 0.0
+    blasting_area_m2: float = 0.0
+    painting_area_m2: float = 0.0
+
+
 class AmbiguityItem(BaseModel):
     location: str
     issue: str
@@ -119,6 +139,7 @@ class ExtractedDataResponse(BaseModel):
     surface_treatment: Optional[SurfaceTreatmentData] = None
     weight_summary: Optional[WeightSummary] = None
     cost_estimation_inputs: Optional[CostEstimationInputs] = None
+    costing_sheet_inputs: Optional[CostingSheetInputs] = None
     ambiguities: List[AmbiguityItem] = []
     
     # Backward compatibility fields (Flattened versions of above)
@@ -162,6 +183,7 @@ class ChatResponse(BaseModel):
     content: str
     model_used: str
     usage: Dict[str, Any] = {}
+    response_id: Optional[str] = None
 
 
 # ─── Abstract Base ────────────────────────────────────────────────────────────
@@ -238,3 +260,99 @@ class AIProvider(ABC):
     ) -> ChatResponse:
         """Handle conversational chat with job context."""
         pass
+
+    async def complete(
+        self,
+        prompt: str,
+        max_tokens: int = 4000,
+        temperature: float = 0.1,
+    ) -> str:
+        """
+        Simple prompt → text completion.
+        Wraps chat() so callers don't need to build a messages list.
+        Returns the plain text string from the response.
+        """
+        response = await self.chat([{"role": "user", "content": prompt}])
+        return response.content
+
+    async def chat_with_attachments(
+        self,
+        prompt: str,
+        images: Optional[List[Dict[str, Any]]] = None,
+        pdfs: Optional[List[Dict[str, Any]]] = None,
+        documents: Optional[List[Dict[str, Any]]] = None,
+        previous_response_id: Optional[str] = None,
+    ) -> "ChatResponse":
+        """
+        Raw LLM inference test: a free-form prompt plus optional attached files,
+        sent to the model with no costing schema or system prompt in the way.
+
+        `images` is a list of {"bytes": bytes, "mime": str} dicts.
+        `pdfs` is a list of {"bytes": bytes, "filename": str} dicts — raw PDF bytes,
+        no text extraction or page-to-image conversion.
+        `documents` is a list of {"bytes": bytes, "filename": str, "mime": str} dicts
+        for non-PDF office/text documents (docx, pptx, xlsx, csv, txt, ...).
+        `previous_response_id` chains a follow-up onto a prior native provider
+        response (only meaningful where the provider supports it, e.g. OpenAI's
+        Responses API) — providers that don't support it just ignore it.
+
+        Providers with a native multimodal chat path should override this; the
+        default here just ignores any attachments and answers the prompt alone.
+        """
+        if images or pdfs or documents:
+            logger.warning(
+                "%s.chat_with_attachments: no multimodal override — %d image(s), %d pdf(s), "
+                "%d document(s) ignored",
+                self.provider_name, len(images or []), len(pdfs or []), len(documents or [])
+            )
+        text = await self.complete(prompt)
+        return ChatResponse(content=text, model_used=self.provider_name, usage={})
+
+    async def extract_from_multiple_files(
+        self,
+        files: List[Dict[str, Any]],
+        additional_context: Optional[str] = None,
+    ) -> "ExtractedDataResponse":
+        """
+        Send all uploaded files (PDFs, images, docs) to the LLM in a single call.
+        Default: processes each file individually then merges results.
+        Override in providers that natively support multi-file batching.
+        """
+        merged = ExtractedDataResponse()
+        for f in files:
+            fn = f.get("filename", "")
+            fb = f.get("bytes", b"")
+            ft = f.get("file_type", "")
+            suffix = ("." + fn.rsplit(".", 1)[-1].lower()) if "." in fn else ""
+            is_img = suffix in _IMAGE_EXTENSIONS
+            try:
+                if is_img:
+                    result = await self.extract_from_image(fb, fn, additional_context)
+                else:
+                    result = await self.extract_from_document(fb, ft, fn, additional_context)
+                merged.structural_elements.extend(result.structural_elements)
+                merged.dimensions.extend(result.dimensions)
+                merged.bolts_and_plates.extend(result.bolts_and_plates)
+                merged.annotations.extend(result.annotations or [])
+                merged.fabrication_notes.extend(result.fabrication_notes or [])
+                merged.flags.extend(result.flags)
+                merged.ambiguities.extend(result.ambiguities)
+                if not merged.drawing_metadata and result.drawing_metadata:
+                    merged.drawing_metadata = result.drawing_metadata
+                if result.overall_confidence > 0:
+                    merged.overall_confidence = max(merged.overall_confidence, result.overall_confidence)
+                if result.summary:
+                    merged.summary = ((merged.summary + " | ") if merged.summary else "") + result.summary
+            except Exception as exc:
+                logger.warning("extract_from_multiple_files fallback: %s failed: %s", fn, exc)
+        return merged
+
+
+# ---------------------------------------------------------------------------
+# Convenience factory — import via:  from app.ai.ai_provider import get_provider
+# ---------------------------------------------------------------------------
+
+def get_provider() -> "AIProvider":
+    """Return the configured AI provider (same as app.ai.get_ai_provider)."""
+    from app.ai import get_ai_provider  # local import avoids circular dependency
+    return get_ai_provider()

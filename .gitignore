@@ -2,9 +2,21 @@
 .env
 .env.local
 .env.production
+.env.example
 
+storage/
+# Log files (rotating — do not commit)
+backend/logs/
+logs/
+*.log
 # Python
 __pycache__/
+backend\app\api\__pycache__
+backend/app/services/__pycache__/
+backend\app\api\routes\__pycache__
+backend/app/__pycache__/
+backend\app\ai\__pycache__
+backend/app/models/__pycache__/
 *.py[cod]
 *$py.class
 *.so
@@ -47,9 +59,6 @@ Thumbs.db
 logs/
 
 # Database
-*.db
-*.sqlite
-*.sqlite3
 
 # Node.js (for frontend)
 node_modules/
@@ -60,3 +69,11 @@ yarn-error.log*
 # Temporary files
 *.tmp
 *.temp
+hwt_*.json
+
+# Python tooling caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/

@@ -7,9 +7,18 @@ const statusConfig: Record<string, { badge: string; label: string }> = {
   draft:                { badge: 'badge-neutral', label: 'Draft' },
   extracting:           { badge: 'badge-warning', label: 'Extracting' },
   pending_confirmation: { badge: 'badge-warning', label: 'Pending Review' },
+  pending_review:       { badge: 'badge-warning', label: 'Pending Review' },
   calculating:          { badge: 'badge-primary', label: 'Calculating' },
+  approved:             { badge: 'badge-success', label: 'Approved' },
   completed:            { badge: 'badge-success', label: 'Completed' },
   failed:               { badge: 'badge-error',   label: 'Failed' },
+}
+
+// Drawing-costing jobs get a "DC-" job number (see _gen_job_number in
+// api/routes/drawing_costing.py) — the estimate pipeline's job numbers don't.
+// Used to route "View" to the right review screen for each pipeline.
+function isDrawingCostingJob(job: any): boolean {
+  return typeof job.job_number === 'string' && job.job_number.startsWith('DC-')
 }
 
 export default function JobHistory() {
@@ -56,8 +65,10 @@ export default function JobHistory() {
               <option value="">All statuses</option>
               <option value="draft">Draft</option>
               <option value="completed">Completed</option>
+              <option value="approved">Approved</option>
               <option value="failed">Failed</option>
               <option value="pending_confirmation">Pending Review</option>
+              <option value="pending_review">Pending Review (Drawing Costing)</option>
             </select>
           </div>
           <span style={{ fontSize: '0.8125rem', color: 'var(--text-muted)' }}>Showing {filtered.length} of {jobs.length}</span>
@@ -101,7 +112,10 @@ export default function JobHistory() {
                       </td>
                       <td style={{ color: 'var(--text-muted)', fontSize: '0.8rem' }}>{new Date(job.created_at).toLocaleDateString()}</td>
                       <td>
-                        <button className="btn btn-ghost btn-sm" onClick={() => navigate(`/quote-summary/${job.id}`)}>
+                        <button
+                          className="btn btn-ghost btn-sm"
+                          onClick={() => navigate(isDrawingCostingJob(job) ? `/drawing-costing/${job.id}` : `/quote-summary/${job.id}`)}
+                        >
                           View <ArrowRight size={12} />
                         </button>
                       </td>

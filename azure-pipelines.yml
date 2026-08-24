@@ -1,0 +1,59 @@
+trigger:
+- main
+
+pool:
+  vmImage: 'ubuntu-latest'
+
+variables:
+  pythonVersion: '3.11'
+
+steps:
+
+- task: UsePythonVersion@0
+  inputs:
+    versionSpec: '$(pythonVersion)'
+  displayName: 'Use Python 3.11'
+
+- script: |
+    cd backend
+    python -m pip install --upgrade pip
+    pip install -r requirements.txt
+  displayName: 'Install Backend Dependencies'
+
+- task: ArchiveFiles@2
+  displayName: 'Archive Backend'
+  inputs:
+    rootFolderOrFile: '$(System.DefaultWorkingDirectory)/backend'
+    includeRootFolder: false
+    archiveType: 'zip'
+    archiveFile: '$(Build.ArtifactStagingDirectory)/backend.zip'
+    replaceExistingArchive: true
+
+- task: PublishBuildArtifacts@1
+  displayName: 'Publish Backend Artifact'
+  inputs:
+    PathtoPublish: '$(Build.ArtifactStagingDirectory)/backend.zip'
+    ArtifactName: 'backend-build'
+    publishLocation: 'Container'
+
+- task: AzureRmWebAppDeployment@4
+  displayName: 'Deploy Backend to App Service'
+  inputs:
+    ConnectionType: 'AzureRM'
+    azureSubscription: 'cost-estimator-sc'
+    appType: 'webAppLinux'
+    WebAppName: 'costestimatorbackend'
+    packageForLinux: '$(Build.ArtifactStagingDirectory)/backend.zip'
+    RuntimeStack: 'PYTHON|3.11'
+    StartupCommand: 'gunicorn -w 1 -k uvicorn.workers.UvicornWorker app.main:app --bind 0.0.0.0:8000 --timeout 120'
+    # Non-secret production flags only — merged into existing App Service settings, never
+    # overwrites secrets (JWT_SECRET_KEY, DATABASE_URL, API keys) which must be set once directly
+    # in Azure Portal > App Service > Configuration (or a Key Vault reference).
+    AppSettings: >
+      -ENVIRONMENT production
+      -DEBUG false
+      -COOKIE_SECURE true
+      -COOKIE_SAMESITE none
+      -FRONTEND_URL https://red-hill-090bbae00.7.azurestaticapps.net
+      -ALLOWED_ORIGINS https://red-hill-090bbae00.7.azurestaticapps.net
+      -SCM_DO_BUILD_DURING_DEPLOYMENT true

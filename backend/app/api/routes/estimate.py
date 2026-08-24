@@ -21,6 +21,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import db_session
+from app.api.dependencies.permissions import require_permission
 from app.models import Job, UploadedFile, ExtractedData, CostingSheet, RateConfiguration, AuditLog
 JobStatus = type('JobStatus', (), {
     'DRAFT': 'draft', 'EXTRACTING': 'extracting',
@@ -33,6 +34,7 @@ FileType = type('FileType', (), {
 })
 from app.services.file_storage import storage_service
 from app.services.document_parser import get_file_text, is_image_file, pdf_to_images
+from app.services.llama_parser import parse_to_markdown
 from app.services.costing_engine import run_costing_engine, DEFAULT_RATES
 from app.services.excel_generator import excel_generator
 from app.ai import get_ai_provider
@@ -67,7 +69,7 @@ def _detect_file_type(filename: str, content_type: str) -> FileType:
         return FileType.OTHER
 
 
-@router.post("/upload")
+@router.post("/upload", dependencies=[Depends(require_permission("estimates.create"))])
 async def upload_files(
     files: List[UploadFile] = File(...),
     client_name: Optional[str] = Form(None),
@@ -105,16 +107,24 @@ async def upload_files(
         storage = await storage_service.save_upload(content, file.filename, str(job.id))
         uf = UploadedFile(
             job_id=job.id,
+            company_id=job.company_id,
             original_filename=file.filename,
             stored_filename=storage["stored_filename"],
             file_type=ftype,
+            file_origin="upload",
             mime_type=file.content_type,
             file_size=storage["file_size"],
             storage_path=storage["storage_path"],
             storage_url=storage["storage_url"],
+            storage_provider=storage.get("storage_provider"),
+            blob_reference=storage.get("blob_reference"),
+            checksum_sha256=storage.get("checksum_sha256"),
             is_processed="pending",
+            processing_status="pending",
+            metadata_json={"source": "upload"},
         )
         db.add(uf)
+        await db.flush()
         uploaded.append({
             "file_id": str(uf.id),
             "filename": file.filename,
@@ -131,7 +141,7 @@ async def upload_files(
     }
 
 
-@router.post("/extract")
+@router.post("/extract", dependencies=[Depends(require_permission("estimates.create"))])
 async def extract_from_files(
     job_id: str,
     additional_context: Optional[str] = None,
@@ -157,75 +167,96 @@ async def extract_from_files(
     ai = get_ai_provider()
     all_extractions = []
 
+    # Collect all file bytes for batched LLM ingestion
+    batch_files = []
+    failed_files: list = []
     for uf in files:
         try:
             file_bytes = await storage_service.get_file(uf.storage_path)
+            batch_files.append({
+                "bytes": file_bytes,
+                "filename": uf.original_filename,
+                "file_type": uf.file_type or "",
+                "uf": uf,
+            })
+        except Exception as e:
+            logger.error(f"Could not load file {uf.original_filename}: {e}")
+            uf.is_processed = "failed"
+            failed_files.append({"file_id": str(uf.id), "filename": uf.original_filename, "error": str(e)})
 
-            # Determine extraction method
-            is_drawing = is_image_file(uf.original_filename) or uf.original_filename.lower().endswith(".pdf")
-            
-            if is_drawing:
-                if uf.original_filename.lower().endswith(".pdf"):
-                    text = get_file_text(file_bytes, uf.original_filename, uf.mime_type)
-                    text_extraction = None
-                    vision_extraction = None
+    all_extractions.extend(failed_files)
 
-                    # Only use text if there's meaningful extractable text (> 200 chars)
-                    if len(text.strip()) > 200:
-                        text_extraction = await ai.extract_from_document(
-                            text.encode("utf-8"), uf.file_type, uf.original_filename, additional_context
-                        )
+    if batch_files:
+        try:
+            # Parse each file via LlamaParse first, then send combined text to LLM
+            parsed_parts: list = []
+            raw_batch: list = []
+            for f in batch_files:
+                try:
+                    md = await parse_to_markdown(f["bytes"], f["filename"])
+                    parsed_parts.append(f"## File: {f['filename']}\n\n{md}")
+                    logger.info("LlamaParse parsed '%s' (%d chars)", f["filename"], len(md))
+                except Exception as parse_err:
+                    logger.warning(
+                        "LlamaParse unavailable for '%s' (%s) — falling back to raw bytes",
+                        f["filename"], parse_err,
+                    )
+                    raw_batch.append(f)
 
-                    vision_bytes = pdf_to_images(file_bytes)
-                    if vision_bytes and (text_extraction is None or _extraction_score(text_extraction) == 0):
-                        vision_extraction = await ai.extract_from_image(vision_bytes, uf.original_filename, additional_context)
-
-                    if text_extraction and vision_extraction:
-                        extraction = text_extraction if _extraction_score(text_extraction) >= _extraction_score(vision_extraction) else vision_extraction
-                    elif text_extraction:
-                        extraction = text_extraction
-                    elif vision_extraction:
-                        extraction = vision_extraction
-                    else:
-                        raise ValueError("Could not extract readable text or images from the PDF")
-                else:
-                    extraction = await ai.extract_from_image(file_bytes, uf.original_filename, additional_context)
+            if parsed_parts:
+                combined_text = "\n\n---\n\n".join(parsed_parts)
+                extraction = await ai.extract_from_document(
+                    file_bytes=combined_text.encode("utf-8"),
+                    file_type="txt",
+                    filename="parsed_document.txt",
+                    additional_context=additional_context,
+                )
             else:
-                # Use Text for everything else (BOQs, docs)
-                text = get_file_text(file_bytes, uf.original_filename, uf.mime_type)
-                extraction = await ai.extract_from_document(text.encode("utf-8"), uf.file_type, uf.original_filename, additional_context)
-
+                # Full fallback: no LlamaParse — send raw files directly
+                extraction = await ai.extract_from_multiple_files(
+                    [{"bytes": f["bytes"], "filename": f["filename"], "file_type": f["file_type"]} for f in raw_batch],
+                    additional_context,
+                )
+            # Store one combined extraction record linked to the first file
+            first_uf = batch_files[0]["uf"]
             ed = ExtractedData(
                 job_id=job.id,
-                file_id=uf.id,
+                file_id=first_uf.id,
                 data_type="full_extraction",
                 extracted_json=extraction.model_dump(),
                 raw_text=extraction.raw_text,
                 confidence=extraction.overall_confidence,
                 is_confirmed=False,
-                flags=[f.model_dump() for f in extraction.flags],
+                flags=[flag.model_dump() for flag in extraction.flags],
                 extraction_model=ai.provider_name,
             )
             db.add(ed)
-            uf.is_processed = "done"
-            all_extractions.append({
-                "file_id": str(uf.id),
-                "filename": uf.original_filename,
-                "extraction_id": str(ed.id),
-                "confidence": extraction.overall_confidence,
-                "dimensions_found": len(extraction.dimensions),
-                "flags": [f.model_dump() for f in extraction.flags],
-                "summary": extraction.summary,
-                "data": extraction.model_dump(),
-            })
+            await db.flush()
+            for f in batch_files:
+                uf = f["uf"]
+                uf.is_processed = "done"
+                all_extractions.append({
+                    "file_id": str(uf.id),
+                    "filename": uf.original_filename,
+                    "extraction_id": str(ed.id),
+                    "confidence": extraction.overall_confidence,
+                    "dimensions_found": len(extraction.dimensions),
+                    "flags": [flag.model_dump() for flag in extraction.flags],
+                    "summary": extraction.summary,
+                    "data": extraction.model_dump(),
+                })
         except Exception as e:
-            logger.error(f"Extraction failed for {uf.original_filename}: {e}")
-            uf.is_processed = "failed"
-            all_extractions.append({
-                "file_id": str(uf.id),
-                "filename": uf.original_filename,
-                "error": str(e),
-            })
+            import traceback
+            logger.error(f"Batch extraction failed: {e}")
+            logger.error(f"Full traceback:\n{traceback.format_exc()}")
+            for f in batch_files:
+                uf = f["uf"]
+                uf.is_processed = "failed"
+                all_extractions.append({
+                    "file_id": str(uf.id),
+                    "filename": uf.original_filename,
+                    "error": str(e),
+                })
 
     job.status = JobStatus.PENDING_CONFIRMATION
 
@@ -242,7 +273,7 @@ async def extract_from_files(
     }
 
 
-@router.post("/confirm")
+@router.post("/confirm", dependencies=[Depends(require_permission("estimates.update"))])
 async def confirm_extraction(
     job_id: str,
     confirmed_items: list = Body(...),
@@ -296,7 +327,7 @@ async def confirm_extraction(
     }
 
 
-@router.post("/calculate")
+@router.post("/calculate", dependencies=[Depends(require_permission("estimates.update"))])
 async def calculate_costs(
     job_id: str,
     db: AsyncSession = Depends(db_session)
@@ -327,6 +358,9 @@ async def calculate_costs(
 
     line_items = confirmed_ed.extracted_json.get("items", [])
 
+    # Pass aggregate costing inputs from AI extraction (steel kg, welding hrs, etc.)
+    costing_inputs = confirmed_ed.extracted_json.get("costing_sheet_inputs") or {}
+
     # Load rates from DB
     rates_result = await db.execute(select(RateConfiguration).where(RateConfiguration.is_active == True))
     rate_rows = rates_result.scalars().all()
@@ -338,7 +372,8 @@ async def calculate_costs(
         costing = run_costing_engine(
             job_id=job_id,
             line_items=line_items,
-            rates=rates
+            rates=rates,
+            costing_inputs=costing_inputs,
         )
     except Exception as e:
         logger.error(f"Costing engine error: {e}")
@@ -359,20 +394,39 @@ async def calculate_costs(
         line_items_json=[asdict(item) if hasattr(item, '__dataclass_fields__') else item
                          for item in costing.line_items],
         totals_json={
-            "total_weight_kg": costing.total_weight_kg,
-            "total_material_cost": costing.total_material_cost,
-            "total_manhours": costing.total_manhours,
-            "total_fabrication_cost": costing.total_fabrication_cost,
-            "total_welding_cost": costing.total_welding_cost,
-            "total_consumables_cost": costing.total_consumables_cost,
-            "total_cutting_cost": costing.total_cutting_cost,
-            "total_surface_treatment_cost": costing.total_surface_treatment_cost,
-            "total_direct_cost": costing.total_direct_cost,
-            "overhead_cost": costing.overhead_cost,
-            "profit_amount": costing.profit_amount,
-            "selling_price": costing.selling_price,
-            "overhead_percentage": costing.overhead_percentage,
-            "profit_margin_percentage": costing.profit_margin_percentage,
+            "total_weight_kg":                costing.total_weight_kg,
+            "total_material_cost":            costing.total_material_cost,
+            "total_manhours":                 costing.total_manhours,
+            "total_fabrication_cost":         costing.total_fabrication_cost,
+            "total_welding_manhours":         costing.total_welding_manhours,
+            "total_welding_cost":             costing.total_welding_cost,
+            "total_consumables_cost":         costing.total_consumables_cost,
+            "total_cutting_cost":             costing.total_cutting_cost,
+            "total_surface_treatment_cost":   costing.total_surface_treatment_cost,
+            "total_direct_cost":              costing.total_direct_cost,
+            "overhead_cost":                  costing.overhead_cost,
+            "overhead_percentage":            costing.overhead_percentage,
+            "grand_total":                    costing.grand_total,
+            "profit_amount":                  costing.profit_amount,
+            "profit_margin_percentage":       costing.profit_margin_percentage,
+            "selling_price":                  costing.selling_price,
+            # Detailed breakdown for Excel
+            "bolt_qty":        costing.bolt_qty,
+            "bolt_cost":       costing.bolt_cost,
+            "paint_litres":    costing.paint_litres,
+            "paint_cost":      costing.paint_cost,
+            "welding_hrs":     costing.welding_hrs,
+            "fab_hrs":         costing.fab_hrs,
+            "blasting_m2":     costing.blasting_m2,
+            "blasting_cost":   costing.blasting_cost,
+            "painting_m2":     costing.painting_m2,
+            "painting_cost":   costing.painting_cost,
+            "galv_kg":         costing.galv_kg,
+            "galv_cost":       costing.galv_cost,
+            "mpi_visits":      costing.mpi_visits,
+            "mpi_cost":        costing.mpi_cost,
+            "qaqc_cost":       costing.qaqc_cost,
+            "packing_cost":    costing.packing_cost,
         },
         rates_snapshot_json=rates,
         audit_trail_json=costing.audit_trail,
@@ -397,7 +451,7 @@ async def calculate_costs(
     }
 
 
-@router.post("/generate-excel")
+@router.post("/generate-excel", dependencies=[Depends(require_permission("excel.generate"))])
 async def generate_excel(
     job_id: str,
     costing_sheet_id: Optional[str] = None,
@@ -473,6 +527,26 @@ async def generate_excel(
     storage = await storage_service.save_output(excel_bytes, filename, str(job.id))
     cs.excel_path = storage["storage_path"]
     cs.excel_url = storage["storage_url"]
+
+    output_file = UploadedFile(
+        job_id=job.id,
+        company_id=job.company_id,
+        original_filename=filename,
+        stored_filename=storage["stored_filename"],
+        file_type="excel",
+        file_origin="generated",
+        mime_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        file_size=storage["file_size"],
+        storage_path=storage["storage_path"],
+        storage_url=storage["storage_url"],
+        storage_provider=storage.get("storage_provider"),
+        blob_reference=storage.get("blob_reference"),
+        checksum_sha256=storage.get("checksum_sha256"),
+        is_processed="done",
+        processing_status="completed",
+        metadata_json={"source": "costing_sheet"},
+    )
+    db.add(output_file)
     await db.commit()
 
     return StreamingResponse(
@@ -482,7 +556,7 @@ async def generate_excel(
     )
 
 
-@router.get("/jobs")
+@router.get("/jobs", dependencies=[Depends(require_permission("dashboard.read"))])
 async def list_jobs(
     skip: int = 0,
     limit: int = 50,
@@ -507,7 +581,7 @@ async def list_jobs(
     ]
 
 
-@router.get("/jobs/{job_id}")
+@router.get("/jobs/{job_id}", dependencies=[Depends(require_permission("estimates.read"))])
 async def get_job(job_id: str, db: AsyncSession = Depends(db_session)):
     from sqlalchemy import or_
     result = await db.execute(

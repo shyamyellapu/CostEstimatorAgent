@@ -7,7 +7,8 @@ Write-Host "🚀 Starting Cost Estimator AI Agent..." -ForegroundColor Cyan
 
 # Start Backend
 Write-Host "📦 Starting Backend API (Port 8000)..." -ForegroundColor Yellow
-Start-Process powershell -ArgumentList "-NoExit", "-Command", "cd $BackendDir; python -m uvicorn app.main:app --host 0.0.0.0 --port 8000"
+$BackendPath = Resolve-Path $BackendDir
+Start-Process powershell -ArgumentList "-NoExit", "-Command", "python -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --app-dir '$BackendPath'"
 
 # Start Frontend
 Write-Host "💻 Starting Frontend UI (Port 5173)..." -ForegroundColor Yellow

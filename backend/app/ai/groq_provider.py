@@ -5,6 +5,7 @@ Model selection:
   - Fast/simple tasks:   llama-3.1-8b-instant
 """
 import base64
+import json
 import logging
 from typing import Any, Dict, List, Optional
 
@@ -26,7 +27,7 @@ from app.config import settings
 
 logger = logging.getLogger(__name__)
 
-DOCUMENT_TEXT_CHAR_LIMIT = 50000
+DOCUMENT_TEXT_CHAR_LIMIT = 300000   # ~75k tokens — safe for Llama 3.3 70b 128k context
 
 
 class GroqProvider(AIProvider):
@@ -42,6 +43,40 @@ class GroqProvider(AIProvider):
     @property
     def provider_name(self) -> str:
         return "groq"
+
+    def _normalize_cover_letter_draft_data(
+        self,
+        data: Dict[str, Any],
+        quotation_data: Dict[str, Any],
+        company_info: Dict[str, str],
+    ) -> Dict[str, Any]:
+        """Backfill required draft fields when the model omits them."""
+        normalized: Dict[str, Any] = dict(data or {})
+
+        to_name = normalized.get("to_name") or quotation_data.get("client") or quotation_data.get("client_name") or ""
+        to_company = normalized.get("to_company") or quotation_data.get("to_company") or to_name
+
+        normalized.setdefault("date", quotation_data.get("date") or quotation_data.get("quotation_date") or "")
+        normalized.setdefault("to_name", to_name)
+        normalized.setdefault("to_company", to_company)
+        normalized.setdefault("subject", "Submission of Techno-Commercial Offer")
+        normalized.setdefault("reference", quotation_data.get("reference_number") or quotation_data.get("reference") or "")
+
+        sections = normalized.get("sections")
+        if not isinstance(sections, list) or not sections:
+            normalized["sections"] = [
+                {
+                    "section_id": "summary",
+                    "title": "Offer Summary",
+                    "content": "Please find attached our techno-commercial offer for your review.",
+                }
+            ]
+
+        normalized.setdefault("closing", "Thank you for your consideration.")
+        normalized.setdefault("signatory_name", company_info.get("signatory_name") or settings.signatory_name)
+        normalized.setdefault("signatory_title", company_info.get("signatory_title") or settings.signatory_title)
+
+        return normalized
 
     async def extract_from_document(
         self,
@@ -69,7 +104,7 @@ class GroqProvider(AIProvider):
                 {"role": "user", "content": prompt}
             ],
             temperature=0.1,
-            max_tokens=6000,
+            max_tokens=16000,
         )
         response.raw_text = text
         return response
@@ -82,9 +117,17 @@ class GroqProvider(AIProvider):
     ) -> ExtractedDataResponse:
         """Extract engineering data from drawing/screenshot image using vision."""
         image_list = image_bytes if isinstance(image_bytes, list) else [image_bytes]
+        
+        # Determine mime type from filename extension
+        # If PDF, the bytes are actually PNG from pdf_to_images conversion
         ext = filename.rsplit(".", 1)[-1].lower()
-        mime_map = {"jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png"}
-        mime = mime_map.get(ext, "image/png")
+        if ext == "pdf":
+            # PDF files are converted to PNG images by pdf_to_images()
+            mime = "image/png"
+        else:
+            mime_map = {"jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png"}
+            mime = mime_map.get(ext, "image/png")
+        
         context_note = f"\nAdditional context: {additional_context}" if additional_context else ""
 
         user_content = [
@@ -155,6 +198,90 @@ class GroqProvider(AIProvider):
                     "confidence": 0.9
                 })
         
+        data["dimensions"] = dimensions
+        return ExtractedDataResponse(**data)
+
+    async def extract_from_multiple_files(
+        self,
+        files: List[Dict[str, Any]],
+        additional_context: Optional[str] = None,
+    ) -> ExtractedDataResponse:
+        """Render all PDFs to page images and send all files to Groq in a single vision call."""
+        import fitz
+        import json as _json
+        _IMG_MIMES = {
+            "jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png",
+            "gif": "image/gif", "webp": "image/webp",
+        }
+        context_note = f"\nAdditional context: {additional_context}" if additional_context else ""
+        filenames = ", ".join(f.get("filename", "") for f in files)
+        user_content = [
+            {"type": "text", "text": IMAGE_EXTRACTION_PROMPT.format(filename=filenames, context=context_note)}
+        ]
+
+        for f in files:
+            fn = f.get("filename", "")
+            fb = f.get("bytes", b"")
+            ft = f.get("file_type", "")
+            ext = fn.rsplit(".", 1)[-1].lower() if "." in fn else ""
+            is_pdf = fn.lower().endswith(".pdf") or "pdf" in ft.lower()
+            is_img = ext in _IMG_MIMES
+
+            if is_pdf:
+                doc = fitz.open(stream=fb, filetype="pdf")
+                try:
+                    for page in doc:
+                        pix = page.get_pixmap(dpi=150)
+                        b64 = base64.standard_b64encode(pix.tobytes("png")).decode("utf-8")
+                        user_content.append({"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64}"}})
+                finally:
+                    doc.close()
+            elif is_img:
+                mime = _IMG_MIMES.get(ext, "image/png")
+                b64 = base64.standard_b64encode(fb).decode("utf-8")
+                user_content.append({"type": "image_url", "image_url": {"url": f"data:{mime};base64,{b64}"}})
+            else:
+                text = fb.decode("utf-8", errors="replace")[:12000]
+                user_content.append({"type": "text", "text": f"=== File: {fn} ===\n{text}"})
+
+        raw_response = await self.raw_client.chat.completions.create(
+            model=self.model_vision,
+            messages=[
+                {"role": "system", "content": SYSTEM_PROMPT_ENGINEER},
+                {"role": "user", "content": user_content},
+            ],
+            temperature=0.1,
+            max_tokens=8192,
+            response_format={"type": "json_object"},
+        )
+        data = _json.loads(raw_response.choices[0].message.content)
+        dimensions: list = []
+        if "structural_elements" in data and isinstance(data["structural_elements"], list):
+            for el in data["structural_elements"]:
+                dimensions.append({
+                    "item_tag": el.get("support_tag") or el.get("item_tag"),
+                    "description": el.get("item_description") or el.get("description"),
+                    "section_type": el.get("section_type"),
+                    "material_grade": el.get("material_grade"),
+                    "length_mm": el.get("length_mm"),
+                    "width_mm": el.get("width_mm"),
+                    "thickness_mm": el.get("thickness_mm"),
+                    "quantity": el.get("quantity", 1),
+                    "surface_area_m2": el.get("surface_area_m2"),
+                    "notes": el.get("notes"),
+                    "confidence": 0.9,
+                })
+        if "bolts_and_plates" in data and isinstance(data["bolts_and_plates"], list):
+            for bp in data["bolts_and_plates"]:
+                desc = bp.get("item_description") or ""
+                dimensions.append({
+                    "item_tag": "BOLT/PLATE",
+                    "description": desc,
+                    "section_type": "plate" if "plate" in desc.lower() else "bolt",
+                    "material_grade": bp.get("grade"),
+                    "quantity": bp.get("quantity", 0),
+                    "confidence": 0.9,
+                })
         data["dimensions"] = dimensions
         return ExtractedDataResponse(**data)
 
@@ -229,17 +356,19 @@ class GroqProvider(AIProvider):
             company_info=str(company_info)
         )
         try:
-            response = await self.client.chat.completions.create(
+            raw = await self.raw_client.chat.completions.create(
                 model=self.model_large,
-                response_model=CoverLetterDraft,
                 messages=[
                     {"role": "system", "content": SYSTEM_PROMPT_ENGINEER},
                     {"role": "user", "content": prompt}
                 ],
                 temperature=0.2,
-                max_tokens=6000,
+                max_tokens=16000,
+                response_format={"type": "json_object"},
             )
-            return response
+            data = json.loads(raw.choices[0].message.content)
+            data = self._normalize_cover_letter_draft_data(data, quotation_data, company_info)
+            return CoverLetterDraft(**data)
         except Exception as e:
             logger.error(f"Groq cover letter draft error: {e}")
             raise
@@ -266,4 +395,67 @@ class GroqProvider(AIProvider):
             )
         except Exception as e:
             logger.error(f"Groq chat error: {e}")
-            return ChatResponse(content=f"Error: {str(e)}", model_used=self.model_large)
+            raise
+
+    async def complete(self, prompt: str, max_tokens: int = 4000, temperature: float = 0.1) -> str:
+        """Direct completion using raw Groq client."""
+        raw = await self.raw_client.chat.completions.create(
+            model=self.model_large,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=temperature,
+            max_tokens=max_tokens,
+        )
+        return raw.choices[0].message.content or ""
+
+    async def chat_with_attachments(
+        self,
+        prompt: str,
+        images: Optional[List[Dict[str, Any]]] = None,
+        pdfs: Optional[List[Dict[str, Any]]] = None,
+        documents: Optional[List[Dict[str, Any]]] = None,
+        previous_response_id: Optional[str] = None,
+    ) -> ChatResponse:
+        """Raw LLM inference test — plain prompt, no costing schema/system prompt.
+        PDFs and images are sent as-is (raw bytes) — no text extraction, no page rasterizing.
+        Groq has no equivalent for arbitrary office documents or `previous_response_id`
+        chaining (that's OpenAI Responses-API-specific), so both are ignored here."""
+        if documents:
+            logger.warning("Groq chat_with_attachments: %d non-PDF document(s) ignored (unsupported)", len(documents))
+
+        user_content: List[Any] = [{"type": "text", "text": prompt}]
+        model = self.model_large
+
+        for pdf in (pdfs or []):
+            b64_pdf = base64.standard_b64encode(pdf["bytes"]).decode("utf-8")
+            user_content.append({
+                "type": "file",
+                "file": {
+                    "filename": pdf.get("filename", "document.pdf"),
+                    "file_data": f"data:application/pdf;base64,{b64_pdf}",
+                }
+            })
+            model = self.model_vision
+
+        for img in (images or []):
+            b64_image = base64.standard_b64encode(img["bytes"]).decode("utf-8")
+            user_content.append({
+                "type": "image_url",
+                "image_url": {"url": f"data:{img['mime']};base64,{b64_image}"}
+            })
+            model = self.model_vision
+
+        try:
+            raw = await self.raw_client.chat.completions.create(
+                model=model,
+                messages=[{"role": "user", "content": user_content}],
+                temperature=0.3,
+                max_tokens=2048,
+            )
+            return ChatResponse(
+                content=raw.choices[0].message.content or "",
+                model_used=model,
+                usage=dict(raw.usage) if raw.usage else {}
+            )
+        except Exception as e:
+            logger.error(f"Groq chat_with_attachments error: {e}")
+            raise
